@@ -10,55 +10,82 @@
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import { validateEnv } from '@bettapay/validation';
+import crypto from 'crypto';
+import { validateEnv, CreateSettlementBody } from '@bettapay/validation';
 import { Queue, Worker } from 'bullmq';
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3001');
 
-const fastify = Fastify({ logger: true });
-fastify.register(cors, { origin: '*' });
+const fastify = Fastify({ 
+  logger: true,
+  genReqId: function (req) {
+    return (req.headers['x-request-id'] as string) || crypto.randomUUID();
+  }
+});
 
-const redisConnection = { host: 'localhost', port: 6379 };
-const settlementQueue = new Queue('settlements', { connection: redisConnection });
+fastify.register(cors, { 
+  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
+});
+
+const redisConnection = new URL(env.REDIS_URL);
+const connectionParams = {
+  host: redisConnection.hostname,
+  port: parseInt(redisConnection.port || '6379', 10),
+};
+
+const settlementQueue = new Queue('settlements', { connection: connectionParams });
 
 const worker = new Worker('settlements', async job => {
   console.log(`[Settlement Worker] Processing job ${job.id}`);
   // In a real app, this interacts with Soroban
-}, { connection: redisConnection });
+}, { connection: connectionParams });
 
-const FEE_BPS = 150; 
+// In-memory store for development (Gateway uses DB, this worker processes memory queue)
 const settlements: any[] = [];
+
+// Mock function to simulate fetching per-merchant fee rules from governance contract / API gateway
+async function fetchMerchantFeeBps(merchantId: string): Promise<number> {
+  // Real implementation would fetch this from Soroban via indexer or gateway DB
+  return 100; // default 100 bps
+}
 
 fastify.get('/api/settlements', async (request, reply) => {
   return { settlements, total: settlements.length };
 });
 
 fastify.post('/api/settlements', async (request, reply) => {
-  const d = request.body as any;
-  const gross = parseFloat(d.amount ?? '0');
-  if (gross <= 0) return reply.code(400).send({ error: 'amount must be > 0' });
+  try {
+    const d = CreateSettlementBody.parse(request.body);
+    const gross = parseFloat(d.amount ?? '0');
+    if (gross <= 0) return reply.code(400).send({ error: 'amount must be > 0' });
 
-  const fee = (gross * FEE_BPS) / 10_000;
-  const net = gross - fee;
+    // Fetch dynamic fee rules
+    const feeBps = await fetchMerchantFeeBps(d.merchantId);
+    
+    const fee = (gross * feeBps) / 10_000;
+    const net = gross - fee;
 
-  const record = {
-    id: 'set_' + Math.random().toString(36).slice(2, 15),
-    merchantId: d.merchantId ?? 'unknown',
-    grossAmount: gross.toFixed(2),
-    feeAmount: fee.toFixed(2),
-    netAmount: net.toFixed(2),
-    feeBps: FEE_BPS,
-    asset: d.asset ?? 'USDC',
-    status: 'completed',
-    contractRef: process.env.SETTLEMENT_CONTRACT_ID ?? null,
-    createdAt: new Date().toISOString(),
-  };
+    const record = {
+      id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
+      merchantId: d.merchantId,
+      grossAmount: gross.toFixed(2),
+      feeAmount: fee.toFixed(2),
+      netAmount: net.toFixed(2),
+      feeBps: feeBps,
+      asset: d.asset ?? 'USDC',
+      status: 'completed',
+      contractRef: env.SETTLEMENT_CONTRACT_ID,
+      createdAt: new Date().toISOString(),
+    };
 
-  settlements.unshift(record);
-  await settlementQueue.add('process-settlement', record);
+    settlements.unshift(record);
+    await settlementQueue.add('process-settlement', record);
 
-  return reply.code(201).send(record);
+    return reply.code(201).send(record);
+  } catch (error) {
+    return reply.code(400).send({ error: 'Invalid request payload' });
+  }
 });
 
 const start = async () => {
