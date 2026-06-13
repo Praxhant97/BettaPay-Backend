@@ -2,7 +2,7 @@
  * Indexer Service — BettaPay Backend
  *
  * Listens to Soroban contract event streams and indexes payment/settlement events.
- * In production, this polls the Stellar RPC for contract events.
+ * Polls the Stellar RPC for contract events on the SETTLEMENT_CONTRACT_ID.
  *
  * Endpoints:
  *   GET /api/events              — list indexed events (newest first, max 50)
@@ -11,64 +11,99 @@
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import crypto from 'crypto';
+import { rpc } from '@stellar/stellar-sdk';
 import { validateEnv } from '@bettapay/validation';
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3003');
 
-const SETTLEMENT_CONTRACT_ID =
-  process.env.SETTLEMENT_CONTRACT_ID ?? 'CBGBGKJSUY7XYB6HWW4CVAU6MW2KD25FSF45E5KCP53TKUK374MBZNFB';
-
-const GOVERNANCE_CONTRACT_ID =
-  process.env.GOVERNANCE_CONTRACT_ID ?? 'CDPFWUTIXF5BC6BKNDLSQOZSDQCXAJNZFCZWHBE2RRHANRN25T3ILPZ7';
-
 const fastify = Fastify({ logger: true });
-fastify.register(cors, { origin: '*' });
+
+fastify.register(cors, { 
+  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
+});
 
 // In-memory event ring buffer (50 events max)
 const events: any[] = [];
+let latestLedgerCursor: number | undefined = undefined;
 
-function pushEvent(topic: string, contractId: string, data: Record<string, unknown>) {
+function pushEvent(topic: string, contractId: string, data: Record<string, unknown>, ledger: number) {
   const event = {
-    id: 'evt_' + Math.random().toString(36).slice(2, 15),
+    id: 'evt_' + crypto.randomUUID().replace(/-/g, ''),
     contractId,
     topic,
     ...data,
+    ledger,
     indexedAt: new Date().toISOString(),
   };
   events.unshift(event);
   if (events.length > 50) events.pop();
-  fastify.log.info(`[Indexer] ${topic} — ${event.id}`);
+  fastify.log.info(`[Indexer] ${topic} — ${event.id} (Ledger ${ledger})`);
   return event;
 }
 
 // HTTP API
 fastify.get('/api/health', async (request, reply) => {
-  return { status: 'ok', indexedEvents: events.length };
+  return { status: 'ok', indexedEvents: events.length, latestLedgerCursor };
 });
 
 fastify.get('/api/events', async (request, reply) => {
-  return { events, total: events.length };
+  return { events, total: events.length, latestLedgerCursor };
 });
 
-// Simulate polling Stellar RPC for contract events
-const TOPICS = ['payment', 'split', 'set_rule', 'merchant', 'fee_cfg', 'anchor_up'];
+const server = new rpc.Server(env.STELLAR_RPC_URL, { allowHttp: true });
 
-setInterval(() => {
-  if (Math.random() > 0.65) {
-    const topic = TOPICS[Math.floor(Math.random() * TOPICS.length)];
-    const isGovernance = topic === 'fee_cfg' || topic === 'anchor_up';
-    pushEvent(topic, isGovernance ? GOVERNANCE_CONTRACT_ID : SETTLEMENT_CONTRACT_ID, {
-      merchant: 'GCCHHKNI7GRA5QWC7RCTT3OHO7SKAUMKQA6IBWEQEO2SXI3GF376UHDD',
-      amount: (Math.random() * 500 + 10).toFixed(2),
-      asset: 'USDC',
-    });
+async function pollEvents() {
+  try {
+    if (!latestLedgerCursor) {
+      const latest = await server.getLatestLedger();
+      latestLedgerCursor = latest.sequence;
+    }
+
+    const request = {
+      startLedger: latestLedgerCursor,
+      filters: [
+        {
+          type: 'contract' as const,
+          contractIds: [env.SETTLEMENT_CONTRACT_ID],
+          topics: [],
+        }
+      ],
+      limit: 100,
+    };
+
+    const response = await server.getEvents(request);
+
+    if (response.events && response.events.length > 0) {
+      for (const evt of response.events) {
+        // Simple mapping of topics for this demo.
+        // In production, decode XDR values properly.
+        pushEvent(
+          evt.topic.join(','),
+          evt.contractId ? evt.contractId.toString() : 'unknown',
+          { rawValue: evt.value.toXDR('base64') },
+          evt.ledger
+        );
+        latestLedgerCursor = Math.max(latestLedgerCursor, evt.ledger + 1);
+      }
+    } else {
+      // If no events, just advance cursor by querying latest ledger
+      const latest = await server.getLatestLedger();
+      latestLedgerCursor = Math.max(latestLedgerCursor, latest.sequence);
+    }
+  } catch (err) {
+    fastify.log.error(`[Indexer] Polling error: ${err}`);
+  } finally {
+    setTimeout(pollEvents, 5000);
   }
-}, 10_000);
+}
 
 const start = async () => {
   try {
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
+    fastify.log.info('[Indexer] Starting Stellar RPC polling loop...');
+    pollEvents();
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);
