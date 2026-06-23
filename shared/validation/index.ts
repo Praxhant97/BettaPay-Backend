@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export * from './schemas.js';
+import "dotenv/config";
 
 // Backend environment schema — all critical values are required.
 // Services will refuse to start if any required variable is missing.

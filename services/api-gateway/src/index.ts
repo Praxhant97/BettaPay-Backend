@@ -30,7 +30,8 @@ import {
   AuthTokenBody
 } from '@bettapay/validation';
 import { PrismaClient } from '@prisma/client';
-import rateLimit from '@fastify/rate-limit';
+import pg from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 
 declare module 'fastify' {
   export interface FastifyInstance {
@@ -38,7 +39,6 @@ declare module 'fastify' {
   }
 }
 
-const SENSITIVE_FIELDS = ['secret', 'password', 'token', 'privateKey', 'secretKey'];
 const isProduction = process.env.NODE_ENV === 'production';
 
 const env = validateEnv(process.env);
@@ -52,9 +52,9 @@ const fastify = Fastify({
 });
 
 // --- Response logging hooks -------------------------------------------------
-const SENSITIVE_FIELDS = new Set(['token', 'secret', 'secretHash', 'password']);
+const SENSITIVE_FIELDS = new Set(['token', 'secret', 'secretHash', 'password', 'privateKey', 'secretKey']);
 
-function redactValue(value: any) {
+function redactValue(value: any): any {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map(redactValue);
   if (typeof value === 'object') return redactObject(value);
@@ -115,7 +115,9 @@ fastify.addHook('onSend', async (request, reply, payload) => {
   return payload;
 });
 
-const prisma = new PrismaClient();
+const pool = new pg.Pool({ connectionString: env.DATABASE_URL });
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 // Setup plugins
 fastify.register(cors, {
@@ -167,7 +169,43 @@ fastify.decorate('authenticate', async function (request: FastifyRequest, reply:
 
 // Routes
 fastify.get('/api/health', async (request, reply) => {
-  return { status: 'healthy', env: env.NODE_ENV };
+  const startTime = Date.now();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const dbPromise = prisma.$queryRaw`SELECT 1`;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Database query timed out')), 3000);
+    });
+
+    await Promise.race([dbPromise, timeoutPromise]);
+
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    const latencyMs = Date.now() - startTime;
+    return {
+      status: 'healthy',
+      env: env.NODE_ENV,
+      db: {
+        connected: true,
+        latencyMs
+      }
+    };
+  } catch (error) {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    fastify.log.error(error);
+    return {
+      status: 'degraded',
+      env: env.NODE_ENV,
+      db: {
+        connected: false
+      }
+    };
+  }
 });
 
 fastify.post('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
