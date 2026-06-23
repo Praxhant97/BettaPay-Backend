@@ -49,6 +49,71 @@ const fastify = Fastify({
     return (req.headers['x-request-id'] as string) || crypto.randomUUID();
   }
 });
+
+// --- Response logging hooks -------------------------------------------------
+const SENSITIVE_FIELDS = new Set(['token', 'secret', 'secretHash', 'password']);
+
+function redactValue(value: any) {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(redactValue);
+  if (typeof value === 'object') return redactObject(value);
+  return value;
+}
+
+function redactObject(obj: Record<string, any>) {
+  const out: Record<string, any> = {};
+  for (const k of Object.keys(obj)) {
+    try {
+      if (SENSITIVE_FIELDS.has(k)) {
+        out[k] = '[REDACTED]';
+      } else {
+        out[k] = redactValue(obj[k]);
+      }
+    } catch (e) {
+      out[k] = '[REDACTION_ERROR]';
+    }
+  }
+  return out;
+}
+
+fastify.addHook('onRequest', async (request, reply) => {
+  // Mark request start for response time calculation
+  (request as any).__startTime = Date.now();
+});
+
+fastify.addHook('onSend', async (request, reply, payload) => {
+  try {
+    const headers = request.headers as Record<string, any>;
+    const reqId = (headers['x-request-id'] as string) || (request.id as string) || 'unknown';
+    const method = request.method;
+    const url = request.url;
+    const statusCode = reply.statusCode || 0;
+    const start = (request as any).__startTime || Date.now();
+    const responseTime = Date.now() - start;
+
+    const baseLog = { reqId, method, url, statusCode, responseTime };
+
+    if (statusCode >= 400) {
+      // attempt to parse payload (may be string, Buffer, object)
+      let body: any = payload;
+      try {
+        if (typeof payload === 'string') body = JSON.parse(payload as string);
+      } catch (e) {
+        // leave as raw string
+      }
+
+      const safeBody = typeof body === 'object' && body !== null ? redactObject(body as Record<string, any>) : body;
+      fastify.log.warn({ ...baseLog, response: safeBody }, 'Error response');
+    } else {
+      fastify.log.info(baseLog, 'Response summary');
+    }
+  } catch (err) {
+    fastify.log.error({ err }, 'onSend hook failed');
+  }
+
+  return payload;
+});
+
 const prisma = new PrismaClient();
 
 // Setup plugins
