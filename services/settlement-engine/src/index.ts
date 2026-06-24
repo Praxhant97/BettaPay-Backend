@@ -4,6 +4,7 @@
  * Handles settlement processing with fee deduction and audit trail.
  *
  * Endpoints:
+ *   GET  /api/health              — liveness and Redis connectivity probe
  *   GET  /api/settlements         — list all settlements
  *   POST /api/settlements         — create and process a settlement
  */
@@ -11,15 +12,31 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import crypto from 'crypto';
+import { PrismaClient } from '@prisma/client/runtime/client';
 import {
   validateEnv,
   CreateSettlementBody,
-  Settlement,
 } from "@bettapay/validation";
 import { Queue, Worker } from 'bullmq';
 
+interface CreateSettlementRouteBody {
+  merchantId?: unknown;
+  amount?: unknown;
+  asset?: unknown;
+}
+
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3001');
+const startTime = Date.now();
+
+const prisma = new PrismaClient();
+
+type SettlementJobData = {
+  id: string;
+  merchantId: string;
+  grossAmount: string;
+  asset: string;
+};
 
 const fastify = Fastify({ 
   logger: true,
@@ -29,7 +46,7 @@ const fastify = Fastify({
 });
 
 fastify.register(cors, { 
-  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
+  origin: env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim()) 
 });
 
 const redisConnection = new URL(env.REDIS_URL);
@@ -59,50 +76,70 @@ new Worker('settlements', async job => {
 // In-memory store for development (Gateway uses DB, this worker processes memory queue)
 const settlements: Settlement[] = [];
 
-// Mock function to simulate fetching per-merchant fee rules from governance contract / API gateway
+// Reads a merchant's fee rule (basis points) from Merchant.settings JSON. Falls
+// back to the configurable default when the merchant is missing or has no rule.
 async function fetchMerchantFeeBps(merchantId: string): Promise<number> {
-  // Real implementation would fetch this from Soroban via indexer or gateway DB
-  return 100; // default 100 bps
+  const merchant = await prisma.merchant.findUnique({ where: { id: merchantId } });
+  const settings = merchant?.settings as { feeBps?: number } | null | undefined;
+  const feeBps = settings?.feeBps;
+  return typeof feeBps === 'number' && Number.isFinite(feeBps) ? feeBps : env.FEES_DEFAULT_BPS;
 }
 
-fastify.get('/api/settlements', async (request, reply) => {
-  return { settlements, total: settlements.length };
+fastify.get('/api/health', async (_request, reply) => {
+  let redisConnected = false;
+
+  try {
+    await settlementQueue.getJobCounts();
+    redisConnected = true;
+  } catch (error) {
+    fastify.log.warn({ error }, 'Settlement Redis health check failed');
+  }
+
+  return reply.code(200).send({
+    status: redisConnected ? 'ok' : 'degraded',
+    uptime: Math.floor((Date.now() - startTime) / 1000),
+    redis: {
+      connected: redisConnected,
+    },
+  });
 });
 
-fastify.post('/api/settlements', async (request, reply) => {
+fastify.get('/api/settlements', async (request, reply) => {
+  const records = await prisma.settlement.findMany({
+    orderBy: { initiatedAt: 'desc' },
+  });
+  return { settlements: records, total: records.length };
+});
+
+fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (request, reply) => {
   try {
     const d = CreateSettlementBody.parse(request.body);
     const gross = parseFloat(d.amount ?? '0');
     if (gross <= 0) return reply.code(400).send({ error: 'amount must be > 0' });
 
-    // Fetch dynamic fee rules
-    const feeBps = await fetchMerchantFeeBps(d.merchantId);
-    
-    const fee = (gross * feeBps) / 10_000;
-    const net = gross - fee;
-    const initiatedAt = new Date().toISOString();
-
-    const record: Settlement = {
-      id: "set_" + crypto.randomUUID().replace(/-/g, ""),
-      merchantId: d.merchantId,
-      totalAmount: d.amount,
-      asset: d.asset,
-      initiatedAt,
-      completedAt: initiatedAt,
-      status: "completed",
-      metadata: {
-        grossAmount: gross.toFixed(2),
-        feeAmount: fee.toFixed(2),
-        netAmount: net.toFixed(2),
-        feeBps,
-        contractRef: env.SETTLEMENT_CONTRACT_ID,
+    const settlement = await prisma.settlement.create({
+      data: {
+        id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
+        merchantId: d.merchantId,
+        totalAmount: d.amount,
+        asset: d.asset,
+        status: 'pending',
       },
+    });
+
+    const jobData: SettlementJobData = {
+      id: settlement.id,
+      merchantId: settlement.merchantId,
+      grossAmount: d.amount,
+      asset: d.asset,
     };
 
-    settlements.unshift(record);
-    await settlementQueue.add('process-settlement', record);
+    await settlementQueue.add('process-settlement', jobData, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 1000 },
+    });
 
-    return reply.code(201).send(record);
+    return reply.code(201).send(settlement);
   } catch (error) {
     return reply.code(400).send({ error: 'Invalid request payload' });
   }

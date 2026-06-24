@@ -8,16 +8,18 @@
  *   GET    /api/health               — liveness probe
  *   POST   /api/auth/token           — login / get JWT
  *   POST   /api/merchants            — register merchant (protected)
- *   GET    /api/merchants/:id        — fetch merchant
+ *   GET    /api/merchants/:id        — fetch merchant (protected)
  *   DELETE /api/merchants/:id        — soft-delete merchant (protected)
  *   POST   /api/merchants/:id/restore — restore soft-deleted merchant (protected)
+ *   PATCH  /api/merchants/:id/settings — update merchant fee rules / settings (protected)
  *   POST   /api/payments             — initiate payment session (protected)
  *   GET    /api/payments/:id         — fetch payment session
+ *   PATCH  /api/payments/:id/status  — transition payment status (protected)
  *   POST   /api/settlements          — trigger settlement (protected)
  *   GET    /api/deployments          — Soroban contract addresses (testnet)
  */
 
-import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
+import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
 import fastifyJwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
@@ -27,25 +29,96 @@ import {
   CreateMerchantBody,
   CreatePaymentBody,
   CreateSettlementBody,
-  AuthTokenBody
+  AuthTokenBody,
+  UpdatePaymentStatusBody,
+  UpdateMerchantSettingsBody
 } from '@bettapay/validation';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
+import helmet from '@fastify/helmet';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 declare module 'fastify' {
   export interface FastifyInstance {
-    authenticate: any;
+    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
+
+interface MerchantParams {
+  id: string;
+}
+
+interface PaymentParams {
+  id: string;
+}
+
+interface AuthTokenRouteBody {
+  merchantId?: unknown;
+}
+
+interface CreateMerchantRouteBody {
+  id?: unknown;
+  name?: unknown;
+  ownerId?: unknown;
+  settings?: unknown;
+}
+
+interface CreatePaymentRouteBody {
+  merchantId?: unknown;
+  payerId?: unknown;
+  amount?: unknown;
+  asset?: unknown;
+  reference?: unknown;
+}
+
+interface CreateSettlementRouteBody {
+  merchantId?: unknown;
+  amount?: unknown;
+  asset?: unknown;
+}
+
+interface UpdateMerchantSettingsRouteBody {
+  feeBps?: unknown;
+  tier?: unknown;
+}
+
+interface UpdatePaymentStatusRouteBody {
+  status?: unknown;
+}
+
+// Allowed payment status transitions. `initiated` is the only non-terminal state;
+// completed, failed, and cancelled are terminal and cannot transition further.
+const PAYMENT_STATUS_TRANSITIONS: Record<string, readonly string[]> = {
+  initiated: ['completed', 'failed', 'cancelled'],
+  completed: [],
+  failed: [],
+  cancelled: [],
+};
 
 const isProduction = process.env.NODE_ENV === 'production';
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3000');
 
+// --- Request lifecycle timeouts ---------------------------------------------
+// REQUEST_TIMEOUT_MS bounds how long a single request may run. If a handler
+// (e.g. a slow DB query or a hung upstream service) exceeds it, the per-request
+// hook below replies 408 Request Timeout so the client connection is released
+// instead of being held open and exhausting the connection pool.
+//
+// CONNECTION_TIMEOUT_MS is the socket-level backstop (set 1s higher). It closes
+// any connection the request timeout did not already finish.
+//
+// IMPORTANT: keep both values BELOW any upstream load balancer / reverse proxy
+// idle timeout (commonly 60s) so this gateway returns a clean 408 rather than
+// the load balancer cutting the connection first.
+const REQUEST_TIMEOUT_MS = 30_000;
+const CONNECTION_TIMEOUT_MS = 31_000;
+
 const fastify = Fastify({
   logger: true,
+  requestTimeout: REQUEST_TIMEOUT_MS,
+  connectionTimeout: CONNECTION_TIMEOUT_MS,
   genReqId: function (req) {
     return (req.headers['x-request-id'] as string) || crypto.randomUUID();
   }
@@ -53,6 +126,36 @@ const fastify = Fastify({
 
 // --- Response logging hooks -------------------------------------------------
 const SENSITIVE_FIELDS = new Set(['token', 'secret', 'secretHash', 'password', 'privateKey', 'secretKey']);
+const CONTROL_CHARS_EXCEPT_NEWLINES_AND_TABS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
+function sanitizeString(value: string): string {
+  return value
+    .trim()
+    .replace(CONTROL_CHARS_EXCEPT_NEWLINES_AND_TABS, '')
+    .normalize('NFC');
+}
+
+function sanitizeInput(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') {
+    return sanitizeString(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(item => sanitizeInput(item, seen));
+  }
+
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) return value;
+    seen.add(value);
+
+    const record = value as Record<string, unknown>;
+    for (const [key, nestedValue] of Object.entries(record)) {
+      record[key] = sanitizeInput(nestedValue, seen);
+    }
+  }
+
+  return value;
+}
 
 function redactValue(value: any): any {
   if (value === null || value === undefined) return value;
@@ -80,6 +183,23 @@ function redactObject(obj: Record<string, any>) {
 fastify.addHook('onRequest', async (request, reply) => {
   // Mark request start for response time calculation
   (request as any).__startTime = Date.now();
+
+  // Per-request timeout guard. Fastify's requestTimeout only bounds how long the
+  // client takes to *send* a request; it does not abort a slow handler. This timer
+  // covers that case: if the response is not sent within REQUEST_TIMEOUT_MS, reply
+  // 408 so the caller is not left hanging. (The slow handler keeps running, but the
+  // client connection is freed.) The timer is cleared in the onResponse hook below.
+  const timeoutTimer = setTimeout(() => {
+    if (!reply.sent) {
+      reply.code(408).send({ error: 'Request Timeout' });
+    }
+  }, REQUEST_TIMEOUT_MS);
+  (request as any).__timeoutTimer = timeoutTimer;
+});
+
+fastify.addHook('onResponse', async (request) => {
+  const timeoutTimer = (request as any).__timeoutTimer;
+  if (timeoutTimer) clearTimeout(timeoutTimer);
 });
 
 fastify.addHook('onSend', async (request, reply, payload) => {
@@ -120,6 +240,8 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 // Setup plugins
+fastify.register(helmet, { contentSecurityPolicy: false, hsts: { maxAge: 31536000 }, referrerPolicy: { policy: 'no-referrer' } });
+
 fastify.register(cors, {
   origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
 });
@@ -167,6 +289,15 @@ fastify.decorate('authenticate', async function (request: FastifyRequest, reply:
   }
 });
 
+fastify.addHook('preHandler', async (request) => {
+  if (request.body !== undefined) {
+    request.body = sanitizeInput(request.body);
+  }
+});
+
+// Zod validation runs inside route handlers after this global preHandler, so
+// schemas receive trimmed, control-character-free, NFC-normalized strings.
+
 // Routes
 fastify.get('/api/health', async (request, reply) => {
   const startTime = Date.now();
@@ -208,7 +339,7 @@ fastify.get('/api/health', async (request, reply) => {
   }
 });
 
-fastify.post('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+fastify.post<{ Body: AuthTokenRouteBody }>('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
   try {
     const d = AuthTokenBody.parse(request.body);
     const merchant = await prisma.merchant.findFirst({ where: { id: d.merchantId, deletedAt: null } });
@@ -224,8 +355,9 @@ fastify.post('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1
 });
 
 // Merchants
-fastify.post('/api/merchants', {
-  preValidation: [fastify.authenticate, logRequestBody],
+fastify.post<{ Body: CreateMerchantRouteBody }>('/api/merchants', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
   try {
@@ -235,7 +367,7 @@ fastify.post('/api/merchants', {
         id: d.id,
         name: d.name,
         ownerId: d.ownerId || 'unknown',
-        settings: d.settings ? JSON.parse(JSON.stringify(d.settings)) : {},
+        settings: d.settings ?? {},
       }
     });
     return reply.code(201).send({ success: true, merchant });
@@ -244,8 +376,10 @@ fastify.post('/api/merchants', {
   }
 });
 
-fastify.get('/api/merchants/:id', async (request, reply) => {
-  const { id } = request.params as { id: string };
+fastify.get<{ Params: MerchantParams }>('/api/merchants/:id', {
+  preValidation: [fastify.authenticate]
+}, async (request, reply) => {
+  const { id } = request.params;
   const merchant = await prisma.merchant.findFirst({
     where: { id, deletedAt: null },
   });
@@ -253,11 +387,11 @@ fastify.get('/api/merchants/:id', async (request, reply) => {
   return merchant;
 });
 
-fastify.delete('/api/merchants/:id', {
+fastify.delete<{ Params: MerchantParams }>('/api/merchants/:id', {
   preValidation: [fastify.authenticate],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
-  const { id } = request.params as { id: string };
+  const { id } = request.params;
   const merchant = await prisma.merchant.findFirst({
     where: { id, deletedAt: null },
   });
@@ -271,11 +405,11 @@ fastify.delete('/api/merchants/:id', {
   return reply.code(200).send({ success: true });
 });
 
-fastify.post('/api/merchants/:id/restore', {
+fastify.post<{ Params: MerchantParams }>('/api/merchants/:id/restore', {
   preValidation: [fastify.authenticate],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
-  const { id } = request.params as { id: string };
+  const { id } = request.params;
   const merchant = await prisma.merchant.findUnique({ where: { id } });
   if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
   if (!merchant.deletedAt) {
@@ -290,9 +424,40 @@ fastify.post('/api/merchants/:id/restore', {
   return reply.code(200).send({ success: true, merchant: restored });
 });
 
+// Update per-merchant settings (fee rules, tier). Merges into existing settings so
+// a partial update does not wipe unrelated keys. The settlement engine reads
+// settings.feeBps from here when computing fees.
+fastify.patch<{ Params: MerchantParams; Body: UpdateMerchantSettingsRouteBody }>('/api/merchants/:id/settings', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
+  config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+}, async (request, reply) => {
+  let d;
+  try {
+    d = UpdateMerchantSettingsBody.parse(request.body);
+  } catch (error) {
+    return reply.code(400).send({ error: 'Invalid request payload' });
+  }
+
+  const { id } = request.params;
+  const merchant = await prisma.merchant.findFirst({ where: { id, deletedAt: null } });
+  if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
+
+  const currentSettings = (merchant.settings ?? {}) as Record<string, unknown>;
+  const nextSettings = { ...currentSettings, ...d };
+
+  const updated = await prisma.merchant.update({
+    where: { id },
+    data: { settings: nextSettings as object },
+  });
+
+  return reply.code(200).send({ success: true, merchant: updated });
+});
+
 // Payments
-fastify.post('/api/payments', {
-  preValidation: [fastify.authenticate, logRequestBody],
+fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
   config: { rateLimit: { max: 300, timeWindow: '1 minute' } }
 }, async (request, reply) => {
   try {
@@ -314,16 +479,51 @@ fastify.post('/api/payments', {
   }
 });
 
-fastify.get('/api/payments/:id', async (request, reply) => {
-  const { id } = request.params as { id: string };
+fastify.get<{ Params: PaymentParams }>('/api/payments/:id', async (request, reply) => {
+  const { id } = request.params;
   const payment = await prisma.payment.findUnique({ where: { id } });
   if (!payment) return reply.code(404).send({ error: 'Payment not found' });
   return payment;
 });
 
+// Enforce valid status transitions. The DB enum and Prisma allow any status, so
+// this route is the single place that guards the payment state machine.
+fastify.patch<{ Params: PaymentParams; Body: UpdatePaymentStatusRouteBody }>('/api/payments/:id/status', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
+  config: { rateLimit: { max: 300, timeWindow: '1 minute' } }
+}, async (request, reply) => {
+  let d: UpdatePaymentStatusBody;
+  try {
+    d = UpdatePaymentStatusBody.parse(request.body);
+  } catch (error) {
+    return reply.code(400).send({ error: 'Invalid request payload' });
+  }
+
+  const { id } = request.params;
+  const payment = await prisma.payment.findUnique({ where: { id } });
+  if (!payment) return reply.code(404).send({ error: 'Payment not found' });
+
+  const allowed = PAYMENT_STATUS_TRANSITIONS[payment.status] ?? [];
+  if (!allowed.includes(d.status)) {
+    return reply.code(422).send({
+      error: 'Invalid status transition',
+      from: payment.status,
+      to: d.status,
+    });
+  }
+
+  const updated = await prisma.payment.update({
+    where: { id },
+    data: { status: d.status },
+  });
+  return reply.send(updated);
+});
+
 // Settlements
-fastify.post('/api/settlements', {
-  preValidation: [fastify.authenticate, logRequestBody],
+fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
   try {
@@ -346,7 +546,6 @@ fastify.post('/api/settlements', {
 fastify.get('/api/deployments', async (request, reply) => {
   return {
     network: env.STELLAR_NETWORK_PASSPHRASE,
-    adminAddress: env.ADMIN_ADDRESS,
     contracts: [
       {
         name: 'Settlement contract',
