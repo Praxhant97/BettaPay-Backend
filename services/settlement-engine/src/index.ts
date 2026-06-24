@@ -11,6 +11,7 @@
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import crypto from 'crypto';
 import { PrismaClient } from '@prisma/client/runtime/client';
 import {
@@ -50,6 +51,8 @@ const fastify = Fastify({
 fastify.register(cors, { 
   origin: env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim()) 
 });
+
+fastify.register(helmet, { contentSecurityPolicy: false });
 
 const redisConnection = new URL(env.REDIS_URL);
 const connectionParams = {
