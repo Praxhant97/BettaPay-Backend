@@ -22,9 +22,10 @@
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import crypto from 'crypto';
-import { PrismaClient } from '@prisma/client';
-import { computeSettlementAmounts } from './settlement-amounts.js';
+import Redis from 'ioredis';
+import { PrismaClient } from '@prisma/client/runtime/client';
 import {
   validateEnv,
   CreateSettlementBody,
@@ -59,9 +60,17 @@ const fastify = Fastify({
   }
 });
 
-fastify.register(cors, {
-  origin: env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim())
+const redis = new Redis(env.REDIS_URL);
+
+fastify.addHook('onClose', async () => {
+  await redis.quit();
 });
+
+fastify.register(cors, { 
+  origin: env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim()) 
+});
+
+fastify.register(helmet, { contentSecurityPolicy: false });
 
 const redisConnection = new URL(env.REDIS_URL);
 const connectionParams = {
@@ -138,6 +147,21 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (req
     const feeBps = await fetchMerchantFeeBps(d.merchantId);
     const { grossAmount, feeAmount, netAmount } = computeSettlementAmounts(d.amount, feeBps);
 
+    const rawIdempotencyKey = request.headers['idempotency-key'];
+    const idempotencyKey = Array.isArray(rawIdempotencyKey) ? rawIdempotencyKey[0] : rawIdempotencyKey;
+
+    if (idempotencyKey) {
+      const existingSettlementId = await redis.get(`idempotency:${idempotencyKey}`);
+      if (existingSettlementId) {
+        const existingSettlement = await prisma.settlement.findUnique({
+          where: { id: existingSettlementId },
+        });
+        if (existingSettlement) {
+          return reply.code(200).send(existingSettlement);
+        }
+      }
+    }
+
     const settlement = await prisma.settlement.create({
       data: {
         id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
@@ -163,6 +187,11 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (req
       attempts: 3,
       backoff: { type: 'exponential', delay: 1000 },
     });
+
+    if (idempotencyKey) {
+      // 24-hour TTL (24 * 60 * 60 = 86400 seconds)
+      await redis.set(`idempotency:${idempotencyKey}`, settlement.id, 'EX', 86400);
+    }
 
     return reply.code(201).send(settlement);
   } catch (error) {
