@@ -13,6 +13,7 @@
  *   POST   /api/merchants/:id/restore — restore soft-deleted merchant (protected)
  *   POST   /api/payments             — initiate payment session (protected)
  *   GET    /api/payments/:id         — fetch payment session
+ *   PATCH  /api/payments/:id/status  — transition payment status (protected)
  *   POST   /api/settlements          — trigger settlement (protected)
  *   GET    /api/deployments          — Soroban contract addresses (testnet)
  */
@@ -27,7 +28,8 @@ import {
   CreateMerchantBody,
   CreatePaymentBody,
   CreateSettlementBody,
-  AuthTokenBody
+  AuthTokenBody,
+  UpdatePaymentStatusBody
 } from '@bettapay/validation';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
@@ -72,6 +74,19 @@ interface CreateSettlementRouteBody {
   amount?: unknown;
   asset?: unknown;
 }
+
+interface UpdatePaymentStatusRouteBody {
+  status?: unknown;
+}
+
+// Allowed payment status transitions. `initiated` is the only non-terminal state;
+// completed, failed, and cancelled are terminal and cannot transition further.
+const PAYMENT_STATUS_TRANSITIONS: Record<string, readonly string[]> = {
+  initiated: ['completed', 'failed', 'cancelled'],
+  completed: [],
+  failed: [],
+  cancelled: [],
+};
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -432,6 +447,40 @@ fastify.get<{ Params: PaymentParams }>('/api/payments/:id', async (request, repl
   const payment = await prisma.payment.findUnique({ where: { id } });
   if (!payment) return reply.code(404).send({ error: 'Payment not found' });
   return payment;
+});
+
+// Enforce valid status transitions. The DB enum and Prisma allow any status, so
+// this route is the single place that guards the payment state machine.
+fastify.patch<{ Params: PaymentParams; Body: UpdatePaymentStatusRouteBody }>('/api/payments/:id/status', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
+  config: { rateLimit: { max: 300, timeWindow: '1 minute' } }
+}, async (request, reply) => {
+  let d: UpdatePaymentStatusBody;
+  try {
+    d = UpdatePaymentStatusBody.parse(request.body);
+  } catch (error) {
+    return reply.code(400).send({ error: 'Invalid request payload' });
+  }
+
+  const { id } = request.params;
+  const payment = await prisma.payment.findUnique({ where: { id } });
+  if (!payment) return reply.code(404).send({ error: 'Payment not found' });
+
+  const allowed = PAYMENT_STATUS_TRANSITIONS[payment.status] ?? [];
+  if (!allowed.includes(d.status)) {
+    return reply.code(422).send({
+      error: 'Invalid status transition',
+      from: payment.status,
+      to: d.status,
+    });
+  }
+
+  const updated = await prisma.payment.update({
+    where: { id },
+    data: { status: d.status },
+  });
+  return reply.send(updated);
 });
 
 // Settlements

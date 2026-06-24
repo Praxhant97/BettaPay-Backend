@@ -192,7 +192,14 @@ export const AuthTokenBody = z.object({
   secret: z.string().min(1, 'secret is required'),
 });
 
+// A payment may only be moved into a terminal state. `initiated` is never an
+// accepted target (payments start there at creation), so it is excluded here.
+export const UpdatePaymentStatusBody = z.object({
+  status: z.enum(['completed', 'failed', 'cancelled']),
+});
+
 export type CreateMerchantBody = z.infer<typeof CreateMerchantBody>;
 export type CreatePaymentBody = z.infer<typeof CreatePaymentBody>;
 export type CreateSettlementBody = z.infer<typeof CreateSettlementBody>;
 export type AuthTokenBody = z.infer<typeof AuthTokenBody>;
+export type UpdatePaymentStatusBody = z.infer<typeof UpdatePaymentStatusBody>;
