@@ -7,12 +7,24 @@
  *   GET  /api/health              — liveness and Redis connectivity probe
  *   GET  /api/settlements         — list all settlements
  *   POST /api/settlements         — create and process a settlement
+ *
+ * Precision strategy
+ * ──────────────────
+ * All monetary arithmetic uses BigNumber.js (ROUND_DOWN, no floating-point).
+ * Fee basis points are applied as:
+ *   feeAmount  = floor(grossAmount × feeBps / 10 000, asset decimals)
+ *   netAmount  = grossAmount − feeAmount
+ *
+ * All three amounts (grossAmount, feeAmount, netAmount) are stored as
+ * decimal strings so the database never loses sub-cent precision for
+ * assets like USDC (6 dp) or XLM (7 dp).
  */
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import crypto from 'crypto';
-import { PrismaClient } from '@prisma/client/runtime/client';
+import { PrismaClient } from '@prisma/client';
+import { computeSettlementAmounts } from './settlement-amounts.js';
 import {
   validateEnv,
   CreateSettlementBody,
@@ -38,15 +50,15 @@ type SettlementJobData = {
   asset: string;
 };
 
-const fastify = Fastify({ 
+const fastify = Fastify({
   logger: true,
   genReqId: function (req) {
     return (req.headers['x-request-id'] as string) || crypto.randomUUID();
   }
 });
 
-fastify.register(cors, { 
-  origin: env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim()) 
+fastify.register(cors, {
+  origin: env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim())
 });
 
 const redisConnection = new URL(env.REDIS_URL);
@@ -111,6 +123,7 @@ async function simulateSorobanSettlement(
 // Mock function to simulate fetching per-merchant fee rules from governance contract / API gateway
 async function fetchMerchantFeeBps(merchantId: string): Promise<number> {
   // Real implementation would fetch this from Soroban via indexer or gateway DB
+  void merchantId;
   return 100; // default 100 bps
 }
 
@@ -133,7 +146,7 @@ fastify.get('/api/health', async (_request, reply) => {
   });
 });
 
-fastify.get('/api/settlements', async (request, reply) => {
+fastify.get('/api/settlements', async (_request, reply) => {
   const records = await prisma.settlement.findMany({
     orderBy: { initiatedAt: 'desc' },
   });
@@ -143,14 +156,25 @@ fastify.get('/api/settlements', async (request, reply) => {
 fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (request, reply) => {
   try {
     const d = CreateSettlementBody.parse(request.body);
-    const gross = parseFloat(d.amount ?? '0');
-    if (gross <= 0) return reply.code(400).send({ error: 'amount must be > 0' });
+
+    // Validate that the amount is positive without floating-point conversion
+    const grossBN = new BigNumber(d.amount ?? '0');
+    if (!grossBN.isFinite() || grossBN.isLessThanOrEqualTo(0)) {
+      return reply.code(400).send({ error: 'amount must be > 0' });
+    }
+
+    const feeBps = await fetchMerchantFeeBps(d.merchantId);
+    const { grossAmount, feeAmount, netAmount } = computeSettlementAmounts(d.amount, feeBps);
 
     const settlement = await prisma.settlement.create({
       data: {
         id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
         merchantId: d.merchantId,
-        totalAmount: d.amount,
+        totalAmount: grossAmount,
+        grossAmount,
+        feeAmount,
+        netAmount,
+        feeBps,
         asset: d.asset,
         status: 'pending',
       },
@@ -159,8 +183,8 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (req
     const jobData: SettlementJobData = {
       id: settlement.id,
       merchantId: settlement.merchantId,
-      grossAmount: d.amount,
-      asset: d.asset,
+      grossAmount: settlement.grossAmount,
+      asset: settlement.asset,
     };
 
     await settlementQueue.add('process-settlement', jobData, {
