@@ -11,6 +11,7 @@
  *   GET    /api/merchants/:id        — fetch merchant (protected)
  *   DELETE /api/merchants/:id        — soft-delete merchant (protected)
  *   POST   /api/merchants/:id/restore — restore soft-deleted merchant (protected)
+ *   PATCH  /api/merchants/:id/settings — update merchant fee rules / settings (protected)
  *   POST   /api/payments             — initiate payment session (protected)
  *   GET    /api/payments/:id         — fetch payment session
  *   PATCH  /api/payments/:id/status  — transition payment status (protected)
@@ -29,7 +30,8 @@ import {
   CreatePaymentBody,
   CreateSettlementBody,
   AuthTokenBody,
-  UpdatePaymentStatusBody
+  UpdatePaymentStatusBody,
+  UpdateMerchantSettingsBody
 } from '@bettapay/validation';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
@@ -73,6 +75,11 @@ interface CreateSettlementRouteBody {
   merchantId?: unknown;
   amount?: unknown;
   asset?: unknown;
+}
+
+interface UpdateMerchantSettingsRouteBody {
+  feeBps?: unknown;
+  tier?: unknown;
 }
 
 interface UpdatePaymentStatusRouteBody {
@@ -415,6 +422,36 @@ fastify.post<{ Params: MerchantParams }>('/api/merchants/:id/restore', {
   });
 
   return reply.code(200).send({ success: true, merchant: restored });
+});
+
+// Update per-merchant settings (fee rules, tier). Merges into existing settings so
+// a partial update does not wipe unrelated keys. The settlement engine reads
+// settings.feeBps from here when computing fees.
+fastify.patch<{ Params: MerchantParams; Body: UpdateMerchantSettingsRouteBody }>('/api/merchants/:id/settings', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
+  config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+}, async (request, reply) => {
+  let d;
+  try {
+    d = UpdateMerchantSettingsBody.parse(request.body);
+  } catch (error) {
+    return reply.code(400).send({ error: 'Invalid request payload' });
+  }
+
+  const { id } = request.params;
+  const merchant = await prisma.merchant.findFirst({ where: { id, deletedAt: null } });
+  if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
+
+  const currentSettings = (merchant.settings ?? {}) as Record<string, unknown>;
+  const nextSettings = { ...currentSettings, ...d };
+
+  const updated = await prisma.merchant.update({
+    where: { id },
+    data: { settings: nextSettings as object },
+  });
+
+  return reply.code(200).send({ success: true, merchant: updated });
 });
 
 // Payments

@@ -108,10 +108,13 @@ async function simulateSorobanSettlement(
   );
 }
 
-// Mock function to simulate fetching per-merchant fee rules from governance contract / API gateway
+// Reads a merchant's fee rule (basis points) from Merchant.settings JSON. Falls
+// back to the configurable default when the merchant is missing or has no rule.
 async function fetchMerchantFeeBps(merchantId: string): Promise<number> {
-  // Real implementation would fetch this from Soroban via indexer or gateway DB
-  return 100; // default 100 bps
+  const merchant = await prisma.merchant.findUnique({ where: { id: merchantId } });
+  const settings = merchant?.settings as { feeBps?: number } | null | undefined;
+  const feeBps = settings?.feeBps;
+  return typeof feeBps === 'number' && Number.isFinite(feeBps) ? feeBps : env.FEES_DEFAULT_BPS;
 }
 
 fastify.get('/api/health', async (_request, reply) => {
