@@ -31,6 +31,7 @@ import {
 } from '@bettapay/validation';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
+import helmet from '@fastify/helmet';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 declare module 'fastify' {
@@ -183,6 +184,8 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 // Setup plugins
+fastify.register(helmet, { contentSecurityPolicy: false, hsts: { maxAge: 31536000 }, referrerPolicy: { policy: 'no-referrer' } });
+
 fastify.register(cors, {
   origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
 });
