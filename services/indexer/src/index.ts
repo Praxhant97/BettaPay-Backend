@@ -23,6 +23,7 @@ const fastify = Fastify({ logger: true });
 fastify.register(cors, { 
   origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
 });
+registerErrorHandler(fastify);
 
 // In-memory event ring buffer (50 events max)
 const events: any[] = [];
