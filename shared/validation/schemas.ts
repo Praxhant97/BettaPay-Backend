@@ -56,11 +56,14 @@ export const settlementSchema = z.object({
   id: idSchema,
   merchantId: idSchema,
   totalAmount: z.string(),
+  grossAmount: z.string(),
+  feeAmount: z.string(),
+  netAmount: z.string(),
+  feeBps: z.number(),
   asset: z.string(),
   initiatedAt: isoDateString,
   completedAt: isoDateString.optional(),
   status: z.enum(['pending','processing','completed','failed']),
-  metadata: z.record(z.any()).optional()
 });
 
 export const fxQuoteSchema = z.object({
@@ -192,7 +195,23 @@ export const AuthTokenBody = z.object({
   secret: z.string().min(1, 'secret is required'),
 });
 
+// A payment may only be moved into a terminal state. `initiated` is never an
+// accepted target (payments start there at creation), so it is excluded here.
+export const UpdatePaymentStatusBody = z.object({
+  status: z.enum(['completed', 'failed', 'cancelled']),
+});
+
+// Per-merchant fee rule configuration. feeBps is basis points (1% = 100 bps),
+// capped at 10000 (100%). Unknown keys are stripped; the route merges these into
+// the merchant's existing settings rather than replacing them.
+export const UpdateMerchantSettingsBody = z.object({
+  feeBps: z.number().int().min(0).max(10000).optional(),
+  tier: z.string().optional(),
+});
+
 export type CreateMerchantBody = z.infer<typeof CreateMerchantBody>;
 export type CreatePaymentBody = z.infer<typeof CreatePaymentBody>;
 export type CreateSettlementBody = z.infer<typeof CreateSettlementBody>;
 export type AuthTokenBody = z.infer<typeof AuthTokenBody>;
+export type UpdatePaymentStatusBody = z.infer<typeof UpdatePaymentStatusBody>;
+export type UpdateMerchantSettingsBody = z.infer<typeof UpdateMerchantSettingsBody>;
