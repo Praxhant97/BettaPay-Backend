@@ -13,7 +13,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import crypto from 'crypto';
 import { rpc } from '@stellar/stellar-sdk';
-import { validateEnv, registerErrorHandler, PaginationQuery, EVENT_TYPES } from '@bettapay/validation';
+import { validateEnv, registerErrorHandler, registerServiceAuth, PaginationQuery, EVENT_TYPES } from '@bettapay/validation';
 import type { IndexedEvent, EventType } from '@bettapay/validation';
 
 const env = validateEnv(process.env);
@@ -25,6 +25,8 @@ fastify.register(cors, {
   origin: env.ALLOWED_ORIGINS
 });
 registerErrorHandler(fastify);
+// Inter-service auth: internal endpoints require a valid x-service-token (#117).
+registerServiceAuth(fastify, env.INTER_SERVICE_SECRET);
 
 // In-memory event ring buffer (50 events max)
 const events: IndexedEvent[] = [];
@@ -56,7 +58,7 @@ fastify.get('/api/health', async (request, reply) => {
   return { status: 'ok', indexedEvents: events.length, latestLedgerCursor };
 });
 
-fastify.get('/api/events', async (request, reply) => {
+fastify.get('/api/events', { preValidation: [fastify.serviceAuth] }, async (request, reply) => {
   const { limit, offset } = PaginationQuery.parse(request.query ?? {});
   const typeParam = (request.query as Record<string, unknown>)?.type as string | undefined;
 

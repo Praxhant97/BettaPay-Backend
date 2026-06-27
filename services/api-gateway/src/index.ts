@@ -29,6 +29,7 @@ import rateLimit from '@fastify/rate-limit';
 import crypto from 'crypto';
 import { z } from 'zod';
 import { validateEnv, getPrismaLogLevels, setupPrismaQueryLogging, connectWithRetry, genReqId } from '@bettapay/validation';
+import { createIndexerClient } from './clients/indexer-client.js';
 import {
   CreateMerchantBody,
   CreatePaymentBody,
@@ -147,6 +148,14 @@ const fastify = Fastify({
 });
 
 registerErrorHandler(fastify);
+
+// Indexer HTTP client for optional on-chain event enrichment (Issue #116).
+// Enrichment is best-effort: indexer failures degrade to payment-only responses.
+const indexerClient = createIndexerClient({
+  baseUrl: env.INDEXER_URL,
+  serviceToken: env.INTER_SERVICE_SECRET,
+  logger: fastify.log,
+});
 
 // --- Response logging hooks -------------------------------------------------
 const SENSITIVE_FIELDS = new Set(['token', 'secret', 'secretHash', 'password', 'privateKey', 'secretKey']);
@@ -549,10 +558,19 @@ fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
     return reply.code(201).send(payment);
 });
 
-fastify.get<{ Params: PaymentParams }>('/api/payments/:id', async (request, reply) => {
+fastify.get<{ Params: PaymentParams; Querystring: { includeEvents?: string } }>('/api/payments/:id', async (request, reply) => {
   const { id } = request.params;
   const payment = await prisma.payment.findUnique({ where: { id } });
   if (!payment) return reply.code(404).send(createErrorResponse(ErrorCodes.NOT_FOUND, 'Payment not found'));
+
+  // Optional on-chain event enrichment (?includeEvents=true). The indexer is an
+  // enrichment source only: if it is unavailable, `events` is null and the
+  // payment is still returned so the endpoint never fails on indexer issues.
+  if (request.query.includeEvents === 'true') {
+    const events = await indexerClient.getPaymentEvents(payment.merchantId);
+    return { ...payment, events };
+  }
+
   return payment;
 });
 

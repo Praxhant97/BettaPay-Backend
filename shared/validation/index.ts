@@ -63,6 +63,13 @@ export const EnvSchema = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_EXPIRES_IN: z.string().default('24h'),
 
+  // Inter-service auth — shared secret presented in the `x-service-token` header
+  // on internal (service-to-service) calls. Required so services fail fast
+  // rather than silently trusting an unauthenticated network.
+  INTER_SERVICE_SECRET: z
+    .string()
+    .min(16, 'INTER_SERVICE_SECRET must be at least 16 characters'),
+
   // CORS — comma-separated origins (parsed to string[] in validateEnv)
   ALLOWED_ORIGINS: z.string().optional(),
 

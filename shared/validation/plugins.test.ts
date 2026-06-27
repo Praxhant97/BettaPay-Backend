@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import Fastify from 'fastify';
 import { z } from 'zod';
-import { registerErrorHandler } from './plugins.js';
+import { registerErrorHandler, registerServiceAuth } from './plugins.js';
 
 test('Zod validation error returns 400', async (t) => {
   const fastify = Fastify({ logger: false });
@@ -76,4 +76,33 @@ test('Generic error returns 500 and does not leak stack trace', async (t) => {
   assert.strictEqual(body.error.details, undefined);
   assert.strictEqual(response.body.includes('Database connection failed'), false);
   assert.strictEqual(logged, true, 'Logger should be called when error occurs');
+});
+
+const SERVICE_SECRET = 'shared-inter-service-secret';
+
+function buildServiceAuthApp() {
+  const app = Fastify({ logger: false });
+  registerServiceAuth(app, SERVICE_SECRET);
+  app.get('/internal', { preValidation: [app.serviceAuth] }, async () => ({ ok: true }));
+  return app;
+}
+
+test('serviceAuth rejects a request without x-service-token', async () => {
+  const app = buildServiceAuthApp();
+  const res = await app.inject({ method: 'GET', url: '/internal' });
+  assert.strictEqual(res.statusCode, 401);
+  assert.strictEqual(JSON.parse(res.body).error.code, 'UNAUTHORIZED');
+});
+
+test('serviceAuth rejects an invalid x-service-token', async () => {
+  const app = buildServiceAuthApp();
+  const res = await app.inject({ method: 'GET', url: '/internal', headers: { 'x-service-token': 'nope' } });
+  assert.strictEqual(res.statusCode, 401);
+});
+
+test('serviceAuth accepts a valid x-service-token', async () => {
+  const app = buildServiceAuthApp();
+  const res = await app.inject({ method: 'GET', url: '/internal', headers: { 'x-service-token': SERVICE_SECRET } });
+  assert.strictEqual(res.statusCode, 200);
+  assert.strictEqual(JSON.parse(res.body).ok, true);
 });
