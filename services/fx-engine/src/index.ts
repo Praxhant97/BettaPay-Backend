@@ -6,16 +6,18 @@
  * cached in memory with a TTL. Hardcoded defaults serve as fallback.
  *
  * Endpoints:
- *   GET /api/rates                         — latest cached rates with cache metadata
- *   GET /api/rates/history?from=&to=&at= — historical rate at a given timestamp
- *   GET /api/currencies                   — list of supported currency codes
- *   GET /api/quote?from=&to=&amount=      — FX quote
+ *   GET  /api/rates                          — latest cached rates with cache metadata
+ *   GET  /api/rates/history?from=&to=&at=  — historical rate at a given timestamp
+ *   GET  /api/currencies                    — list of supported currency codes
+ *   GET  /api/quote?from=&to=&amount=       — FX quote (returns quoteId for verification)
+ *   POST /api/quote/verify                  — verify a quote is still valid; returns currentRate
  */
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import { Redis } from 'ioredis';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import {
   validateEnv,
@@ -126,6 +128,31 @@ function updateBaseRates(newRates: Record<string, number>): void {
   storeRateSnapshot(newRates).catch(() => {}); // Redis errors are non-fatal
 }
 
+// ── Quote storage (issue #57) ────────────────────────────────────────────
+// Quotes are stored in Redis under fx:quote:<quoteId>.
+//
+// Two TTLs:
+//   QUOTE_TTL_MS         — how long the rate is locked / valid (60 s, = RATE_TTL_MS)
+//   QUOTE_CLEANUP_TTL_MS — how long the key lives in Redis    (10 min)
+//
+// The longer cleanup TTL lets POST /api/quote/verify return
+// { valid: false, stale: true, currentRate } for expired-but-known quotes
+// instead of a 404, so clients can see how much the rate has moved.
+
+const QUOTE_TTL_MS         = RATE_TTL_MS;
+const QUOTE_CLEANUP_TTL_MS = 10 * 60 * 1000;
+const QUOTE_KEY_PREFIX     = 'fx:quote:';
+
+interface StoredQuote {
+  quoteId:   string;
+  from:      string;
+  to:        string;
+  amount:    string;
+  result:    string;
+  rate:      string;
+  expiresAt: number; // Unix ms — quote validity cutoff
+}
+
 const fastify = Fastify({
   logger: true,
   genReqId,
@@ -225,16 +252,43 @@ fastify.get(
 
     const exchangeRate = getOrComputeRate(from, to);
     const targetAmount = amount * exchangeRate;
+    const expiresAt    = Date.now() + QUOTE_TTL_MS;
+
+    // Store quote so it can be verified later. If Redis is unavailable the
+    // quote is still returned — clients just won't be able to call /verify.
+    let quoteId: string | null = null;
+    try {
+      quoteId = randomUUID();
+      const stored: StoredQuote = {
+        quoteId,
+        from,
+        to,
+        amount: query.amount,
+        result: targetAmount.toFixed(4),
+        rate:   exchangeRate.toFixed(8),
+        expiresAt,
+      };
+      await redis.set(
+        `${QUOTE_KEY_PREFIX}${quoteId}`,
+        JSON.stringify(stored),
+        'PX',
+        QUOTE_CLEANUP_TTL_MS,
+      );
+    } catch (err) {
+      fastify.log.warn({ err }, 'Failed to store quote; quote will not be verifiable');
+      quoteId = null;
+    }
 
     return {
+      quoteId,
       from,
       to,
-      amount:        amount.toString(),
+      amount:        query.amount,
       result:        targetAmount.toFixed(4),
       rate:          exchangeRate.toFixed(8),
       slippageLimit: '0.005',
       cachedAt:      new Date(cache.cachedAt).toISOString(),
-      expiresAt:     new Date(Date.now() + RATE_TTL_MS).toISOString(),
+      expiresAt:     new Date(expiresAt).toISOString(),
     };
   },
 );
@@ -328,6 +382,64 @@ fastify.get(
       to,
       rate: rate.toFixed(8),
       at:   new Date(snapshot.ts).toISOString(),
+    };
+  },
+);
+
+// ── POST /api/quote/verify (issue #57) ───────────────────────────────────
+
+const VerifyQuoteBody = z.object({
+  quoteId: z.string().min(1),
+});
+
+interface VerifyQuoteRouteBody {
+  quoteId?: unknown;
+}
+
+fastify.post<{ Body: VerifyQuoteRouteBody }>(
+  '/api/quote/verify',
+  {
+    config: {
+      rateLimit: {
+        max:        100,
+        timeWindow: 60 * 1000,
+      },
+    },
+  },
+  async (request, reply) => {
+    let body: z.infer<typeof VerifyQuoteBody>;
+    try {
+      body = VerifyQuoteBody.parse(request.body);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send(
+          createErrorResponse(ErrorCodes.INVALID_QUERY, 'Invalid request body', err.errors),
+        );
+      }
+      throw err;
+    }
+
+    const raw = await redis.get(`${QUOTE_KEY_PREFIX}${body.quoteId}`);
+    if (!raw) {
+      return reply.code(404).send(
+        createErrorResponse(ErrorCodes.NOT_FOUND, 'Quote not found'),
+      );
+    }
+
+    const stored      = JSON.parse(raw) as StoredQuote;
+    const now         = Date.now();
+    const valid       = now <= stored.expiresAt;
+    const currentRate = getOrComputeRate(stored.from, stored.to);
+
+    return {
+      valid,
+      stale:       !valid,
+      quoteId:     stored.quoteId,
+      from:        stored.from,
+      to:          stored.to,
+      rate:        stored.rate,
+      currentRate: currentRate.toFixed(8),
+      expiresAt:   new Date(stored.expiresAt).toISOString(),
     };
   },
 );
