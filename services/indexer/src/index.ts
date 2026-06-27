@@ -13,18 +13,20 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import crypto from 'crypto';
 import { rpc } from '@stellar/stellar-sdk';
-import { validateEnv, registerErrorHandler, registerServiceAuth, PaginationQuery, EVENT_TYPES } from '@bettapay/validation';
+import { validateEnv, registerErrorHandler, registerServiceAuth, PaginationQuery, EVENT_TYPES, createLoggerOptions, registerTracing, genReqId } from '@bettapay/validation';
 import type { IndexedEvent, EventType } from '@bettapay/validation';
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3003');
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger: createLoggerOptions({ level: env.LOG_LEVEL }), genReqId });
 
 fastify.register(cors, {
   origin: env.ALLOWED_ORIGINS
 });
 registerErrorHandler(fastify);
+// Distributed tracing: log + propagate x-request-id / x-trace-id (#118).
+registerTracing(fastify);
 // Inter-service auth: internal endpoints require a valid x-service-token (#117).
 registerServiceAuth(fastify, env.INTER_SERVICE_SECRET);
 

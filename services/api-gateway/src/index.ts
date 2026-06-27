@@ -28,7 +28,7 @@ import fastifyJwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import crypto from 'crypto';
 import { z } from 'zod';
-import { validateEnv, getPrismaLogLevels, setupPrismaQueryLogging, connectWithRetry, genReqId } from '@bettapay/validation';
+import { validateEnv, getPrismaLogLevels, setupPrismaQueryLogging, connectWithRetry, genReqId, createLoggerOptions, registerTracing } from '@bettapay/validation';
 import { createIndexerClient } from './clients/indexer-client.js';
 import {
   CreateMerchantBody,
@@ -138,7 +138,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const CONNECTION_TIMEOUT_MS = 31_000;
 
 const fastify = Fastify({
-  logger: true,
+  logger: createLoggerOptions({ level: env.LOG_LEVEL }),
   requestTimeout: REQUEST_TIMEOUT_MS,
   connectionTimeout: CONNECTION_TIMEOUT_MS,
   // Limit request body size to 1MB (1,048,576 bytes) to protect the API gateway
@@ -148,6 +148,9 @@ const fastify = Fastify({
 });
 
 registerErrorHandler(fastify);
+// Distributed tracing: normalise x-request-id / x-trace-id and bind to the
+// request logger so trace context is logged and propagated downstream (#118).
+registerTracing(fastify);
 
 // Indexer HTTP client for optional on-chain event enrichment (Issue #116).
 // Enrichment is best-effort: indexer failures degrade to payment-only responses.
@@ -567,7 +570,8 @@ fastify.get<{ Params: PaymentParams; Querystring: { includeEvents?: string } }>(
   // enrichment source only: if it is unavailable, `events` is null and the
   // payment is still returned so the endpoint never fails on indexer issues.
   if (request.query.includeEvents === 'true') {
-    const events = await indexerClient.getPaymentEvents(payment.merchantId);
+    // Forward tracing headers so the indexer call is part of the same trace (#118).
+    const events = await indexerClient.getPaymentEvents(payment.merchantId, request.headers);
     return { ...payment, events };
   }
 

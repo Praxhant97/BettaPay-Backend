@@ -8,6 +8,8 @@ export * from './schemas.js';
 export * from './plugins.js';
 export * from './prisma.js';
 export * from './cors.js';
+export * from './tracing.js';
+export * from './logger.js';
 import "dotenv/config";
 
 export function genReqId(req: FastifyRequest | IncomingMessage): string {
@@ -55,6 +57,11 @@ export function createErrorResponse(code: string, message: string, details?: unk
 export const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().transform((s) => parseInt(s, 10)).default('3000'),
+
+  // Logging — pino level for the shared logger config (#119).
+  LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+    .default('info'),
 
   // Fees — default basis points applied when a merchant has no custom fee rule.
   FEES_DEFAULT_BPS: z.string().transform((s) => parseInt(s, 10)).default('100'),

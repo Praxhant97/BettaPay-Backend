@@ -21,6 +21,8 @@ import {
   createErrorResponse,
   ErrorCodes,
   genReqId,
+  createLoggerOptions,
+  registerTracing,
 } from '@bettapay/validation';
 
 const env = validateEnv(process.env);
@@ -58,7 +60,7 @@ let cache: RateCache = {
 };
 
 const fastify = Fastify({
-  logger: true,
+  logger: createLoggerOptions({ level: env.LOG_LEVEL }),
   genReqId,
 });
 
@@ -67,6 +69,8 @@ fastify.register(cors, {
 });
 fastify.register(rateLimit, { max: 200, timeWindow: 60 * 1000 });
 registerErrorHandler(fastify);
+// Distributed tracing: log + propagate x-request-id / x-trace-id (#118).
+registerTracing(fastify);
 
 fastify.get('/api/health', async (_request, _reply) => {
   return {

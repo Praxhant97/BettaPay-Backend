@@ -76,6 +76,26 @@ test('getPaymentEvents omits the service-token header when no token is configure
   t.end();
 });
 
+test('getPaymentEvents forwards incoming tracing headers downstream (#118)', async (t) => {
+  let sentHeaders: Record<string, string> | undefined;
+  const client = createIndexerClient({
+    baseUrl: BASE,
+    serviceToken: 'tok',
+    fetchImpl: async (_url, init) => {
+      sentHeaders = (init?.headers ?? {}) as Record<string, string>;
+      return jsonResponse(eventsBody(PAYMENT_COMPLETED_TYPE));
+    },
+  });
+  await client.getPaymentEvents('merchant_1', {
+    'x-request-id': 'req-77',
+    'x-trace-id': 'trace-88',
+  });
+  t.equal(sentHeaders?.['x-request-id'], 'req-77', 'forwards x-request-id');
+  t.equal(sentHeaders?.['x-trace-id'], 'trace-88', 'forwards x-trace-id');
+  t.equal(sentHeaders?.['x-service-token'], 'tok', 'still sends service token alongside tracing');
+  t.end();
+});
+
 test('getPaymentEvents returns [] when indexer has no matching events', async (t) => {
   const client = createIndexerClient({
     baseUrl: BASE,

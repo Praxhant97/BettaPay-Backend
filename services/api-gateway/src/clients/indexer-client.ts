@@ -17,6 +17,9 @@
  */
 
 import type { IndexedEvent, EventType } from '@bettapay/validation';
+import { propagateTracingHeaders } from '@bettapay/validation';
+
+type IncomingHeaders = Record<string, string | string[] | undefined>;
 
 /**
  * A single indexed on-chain event as returned by the indexer's `/api/events`.
@@ -55,10 +58,13 @@ export interface IndexerClient {
   /**
    * Fetch on-chain `PaymentCompleted` events related to a merchant.
    *
+   * @param merchantId      merchant whose events to fetch
+   * @param incomingHeaders inbound request headers; tracing headers
+   *                        (x-request-id / x-trace-id) are propagated downstream (#118)
    * @returns the matching events on success (possibly empty), or `null` when the
    *          indexer is unavailable so the caller can degrade gracefully.
    */
-  getPaymentEvents(merchantId: string): Promise<IndexerEvent[] | null>;
+  getPaymentEvents(merchantId: string, incomingHeaders?: IncomingHeaders): Promise<IndexerEvent[] | null>;
 }
 
 export function createIndexerClient(options: IndexerClientOptions): IndexerClient {
@@ -76,7 +82,12 @@ export function createIndexerClient(options: IndexerClientOptions): IndexerClien
     ? { 'x-service-token': serviceToken }
     : {};
 
-  async function getPaymentEvents(merchantId: string): Promise<IndexerEvent[] | null> {
+  async function getPaymentEvents(
+    merchantId: string,
+    incomingHeaders: IncomingHeaders = {},
+  ): Promise<IndexerEvent[] | null> {
+    // Auth (#117) + tracing (#118) headers for this inter-service call.
+    const headers = propagateTracingHeaders(incomingHeaders, { ...authHeaders });
     // The indexer filters by `?type=` server-side; `merchantId` is forwarded for
     // forward-compatibility (ignored until the indexer decodes it). We still
     // filter by the typed `event.type` client-side as a defensive backstop.
@@ -89,7 +100,7 @@ export function createIndexerClient(options: IndexerClientOptions): IndexerClien
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const res = await fetchImpl(url, { signal: controller.signal, headers: authHeaders });
+      const res = await fetchImpl(url, { signal: controller.signal, headers });
 
       if (!res.ok) {
         logger?.warn(
