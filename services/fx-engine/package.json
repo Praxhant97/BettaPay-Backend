@@ -13,6 +13,7 @@
   "dependencies": {
     "@fastify/rate-limit": "^10.0.0",
     "@bettapay/validation": "workspace:*",
+    "ioredis": "^5.11.1",
     "zod": "^3.22.4"
   },
   "devDependencies": {
