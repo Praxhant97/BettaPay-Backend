@@ -6,14 +6,16 @@
  * cached in memory with a TTL. Hardcoded defaults serve as fallback.
  *
  * Endpoints:
- *   GET /api/rates               — latest cached rates with cache metadata
- *   GET /api/currencies          — list of supported currency codes
- *   GET /api/quote?from=&to=&amount= — FX quote
+ *   GET /api/rates                         — latest cached rates with cache metadata
+ *   GET /api/rates/history?from=&to=&at= — historical rate at a given timestamp
+ *   GET /api/currencies                   — list of supported currency codes
+ *   GET /api/quote?from=&to=&amount=      — FX quote
  */
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import { Redis } from 'ioredis';
 import { z } from 'zod';
 import {
   validateEnv,
@@ -94,15 +96,44 @@ function getOrComputeRate(from: string, to: string): number {
   return rate;
 }
 
+// ── Rate history snapshots (issue #56) ───────────────────────────────────
+// Snapshots are stored in a Redis Sorted Set (score = Unix ms timestamp).
+// ZREVRANGEBYSCORE lets us find the closest snapshot at or before any point
+// in time in O(log N). Entries older than SNAPSHOT_RETENTION_MS are pruned
+// on each write.
+
+// Assigned after Fastify is created so the error handler can use fastify.log.
+// The definite-assignment assertion is safe: storeRateSnapshot is only called
+// at runtime (never during synchronous module init), by which point redis is set.
+let redis!: Redis;
+
+const SNAPSHOT_KEY           = 'fx:rate_snapshots';
+const SNAPSHOT_RETENTION_MS  = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+async function storeRateSnapshot(rates: Record<string, number>): Promise<void> {
+  const now    = Date.now();
+  const cutoff = now - SNAPSHOT_RETENTION_MS;
+  await redis
+    .pipeline()
+    .zadd(SNAPSHOT_KEY, now, JSON.stringify({ ts: now, rates }))
+    .zremrangebyscore(SNAPSHOT_KEY, '-inf', cutoff)
+    .exec();
+}
+
 function updateBaseRates(newRates: Record<string, number>): void {
   cache = { rates: newRates, cachedAt: Date.now() };
   computedRateCache.clear();
+  storeRateSnapshot(newRates).catch(() => {}); // Redis errors are non-fatal
 }
 
 const fastify = Fastify({
   logger: true,
   genReqId,
 });
+
+redis = new Redis(env.REDIS_URL, { enableOfflineQueue: false });
+redis.on('error', (err) => fastify.log.warn({ err: err.message }, 'Redis error in fx-engine'));
+fastify.addHook('onClose', async () => { await redis.quit().catch(() => {}); });
 
 fastify.register(cors, {
   origin: env.ALLOWED_ORIGINS,
@@ -208,6 +239,99 @@ fastify.get(
   },
 );
 
+// ── GET /api/rates/history (issue #56) ───────────────────────────────────
+
+const HistoryQuerySchema = z.object({
+  from: z.string(),
+  to:   z.string(),
+  at:   z.string().optional(), // ISO 8601; defaults to now
+});
+
+fastify.get(
+  '/api/rates/history',
+  {
+    config: {
+      rateLimit: {
+        max:        100,
+        timeWindow: 60 * 1000,
+      },
+    },
+  },
+  async (request, reply) => {
+    let query: z.infer<typeof HistoryQuerySchema>;
+    try {
+      query = HistoryQuerySchema.parse(request.query);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return reply.code(400).send(
+          createErrorResponse(ErrorCodes.INVALID_QUERY, 'Invalid query parameters', err.errors),
+        );
+      }
+      throw err;
+    }
+
+    const from = query.from.toUpperCase();
+    const to   = query.to.toUpperCase();
+
+    const unsupported: string[] = [];
+    if (!SUPPORTED_CURRENCIES.includes(from)) unsupported.push(from);
+    if (!SUPPORTED_CURRENCIES.includes(to))   unsupported.push(to);
+
+    if (unsupported.length > 0) {
+      return reply.code(400).send(
+        createErrorResponse(
+          ErrorCodes.UNSUPPORTED_CURRENCY_PAIR,
+          `Unsupported currency: ${unsupported.join(', ')}`,
+          { unsupportedCurrencies: unsupported, supportedCurrencies: SUPPORTED_CURRENCIES },
+        ),
+      );
+    }
+
+    if (from === to) {
+      return reply.code(400).send(
+        createErrorResponse(ErrorCodes.INVALID_QUERY, 'from and to must be different currencies'),
+      );
+    }
+
+    const atMs = query.at ? new Date(query.at).getTime() : Date.now();
+    if (isNaN(atMs)) {
+      return reply.code(400).send(
+        createErrorResponse(ErrorCodes.INVALID_QUERY, 'at must be a valid ISO 8601 timestamp'),
+      );
+    }
+
+    const members = await redis.zrevrangebyscore(SNAPSHOT_KEY, atMs, '-inf', 'LIMIT', 0, 1);
+    if (!members.length) {
+      return reply.code(404).send(
+        createErrorResponse(
+          ErrorCodes.NOT_FOUND,
+          'No rate snapshot found at or before the requested time',
+        ),
+      );
+    }
+
+    const snapshot = JSON.parse(members[0]) as { ts: number; rates: Record<string, number> };
+
+    if (!(from in snapshot.rates) || !(to in snapshot.rates)) {
+      return reply.code(404).send(
+        createErrorResponse(
+          ErrorCodes.NOT_FOUND,
+          'No rate data for the requested pair at the given time',
+        ),
+      );
+    }
+
+    const rate = computeRate(from, to, snapshot.rates);
+
+    return {
+      from,
+      to,
+      rate: rate.toFixed(8),
+      at:   new Date(snapshot.ts).toISOString(),
+    };
+  },
+);
+
 // ── Start ──────────────────────────────────────────────────────────────────
 
 let shuttingDown = false;
@@ -232,6 +356,10 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 const start = async () => {
   try {
+    // Seed the snapshot store so history is queryable from the very first request
+    await storeRateSnapshot(cache.rates).catch((err) => {
+      fastify.log.warn({ err }, 'Failed to store initial rate snapshot');
+    });
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
   } catch (err) {
     fastify.log.error(err);
