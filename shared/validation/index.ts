@@ -108,6 +108,10 @@ export const EnvSchema = z.object({
   ),
   RATES_REFRESH_INTERVAL_MS: z.string().transform((s) => parseInt(s, 10)).default('60000'),
   RATES_CACHE_TTL_MS: z.string().transform((s) => parseInt(s, 10)).default('60000'),
+
+  // FX Engine — slippage tolerance (basis points; 100 bps = 1%)
+  DEFAULT_SLIPPAGE_BPS: z.string().transform((s) => parseInt(s, 10)).default('50'),
+  MAX_SLIPPAGE_BPS:     z.string().transform((s) => parseInt(s, 10)).default('500'),
 });
 
 export type Env = Omit<z.infer<typeof EnvSchema>, 'ALLOWED_ORIGINS'> & {
