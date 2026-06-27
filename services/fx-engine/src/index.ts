@@ -144,13 +144,14 @@ const QUOTE_CLEANUP_TTL_MS = 10 * 60 * 1000;
 const QUOTE_KEY_PREFIX     = 'fx:quote:';
 
 interface StoredQuote {
-  quoteId:   string;
-  from:      string;
-  to:        string;
-  amount:    string;
-  result:    string;
-  rate:      string;
-  expiresAt: number; // Unix ms — quote validity cutoff
+  quoteId:     string;
+  from:        string;
+  to:          string;
+  amount:      string;
+  result:      string;
+  rate:        string;
+  slippageBps: number;
+  expiresAt:   number; // Unix ms — quote validity cutoff
 }
 
 const fastify = Fastify({
@@ -191,9 +192,10 @@ fastify.get('/api/currencies', async (_request, _reply) => {
 // ── GET /api/quote (issues #48 & #49) ────────────────────────────────────
 
 const QuoteQuerySchema = z.object({
-  from:   z.string().default('USDC'),
-  to:     z.string().default('NGN'),
-  amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string').default('1'),
+  from:        z.string().default('USDC'),
+  to:          z.string().default('NGN'),
+  amount:      z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string').default('1'),
+  slippageBps: z.string().regex(/^\d+$/, 'slippageBps must be a non-negative integer').optional(),
 });
 
 fastify.get(
@@ -250,6 +252,12 @@ fastify.get(
       );
     }
 
+    const requestedBps  = query.slippageBps !== undefined
+      ? parseInt(query.slippageBps, 10)
+      : env.DEFAULT_SLIPPAGE_BPS;
+    const effectiveBps  = Math.min(requestedBps, env.MAX_SLIPPAGE_BPS);
+    const slippageLimit = (effectiveBps / 10_000).toFixed(4);
+
     const exchangeRate = getOrComputeRate(from, to);
     const targetAmount = amount * exchangeRate;
     const expiresAt    = Date.now() + QUOTE_TTL_MS;
@@ -263,9 +271,10 @@ fastify.get(
         quoteId,
         from,
         to,
-        amount: query.amount,
-        result: targetAmount.toFixed(4),
-        rate:   exchangeRate.toFixed(8),
+        amount:      query.amount,
+        result:      targetAmount.toFixed(4),
+        rate:        exchangeRate.toFixed(8),
+        slippageBps: effectiveBps,
         expiresAt,
       };
       await redis.set(
@@ -286,7 +295,8 @@ fastify.get(
       amount:        query.amount,
       result:        targetAmount.toFixed(4),
       rate:          exchangeRate.toFixed(8),
-      slippageLimit: '0.005',
+      slippageBps:   effectiveBps,
+      slippageLimit,
       cachedAt:      new Date(cache.cachedAt).toISOString(),
       expiresAt:     new Date(expiresAt).toISOString(),
     };
@@ -430,16 +440,19 @@ fastify.post<{ Body: VerifyQuoteRouteBody }>(
     const now         = Date.now();
     const valid       = now <= stored.expiresAt;
     const currentRate = getOrComputeRate(stored.from, stored.to);
+    const slippageBps = stored.slippageBps ?? env.DEFAULT_SLIPPAGE_BPS;
 
     return {
       valid,
-      stale:       !valid,
-      quoteId:     stored.quoteId,
-      from:        stored.from,
-      to:          stored.to,
-      rate:        stored.rate,
-      currentRate: currentRate.toFixed(8),
-      expiresAt:   new Date(stored.expiresAt).toISOString(),
+      stale:         !valid,
+      quoteId:       stored.quoteId,
+      from:          stored.from,
+      to:            stored.to,
+      rate:          stored.rate,
+      currentRate:   currentRate.toFixed(8),
+      slippageBps,
+      slippageLimit: (slippageBps / 10_000).toFixed(4),
+      expiresAt:     new Date(stored.expiresAt).toISOString(),
     };
   },
 );
