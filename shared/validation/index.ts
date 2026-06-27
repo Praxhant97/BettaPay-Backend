@@ -1,13 +1,18 @@
 import { z } from 'zod';
 import { IncomingMessage } from 'http';
 import { randomUUID } from 'crypto';
+import { FastifyRequest } from 'fastify';
+import { resolveAllowedOrigins } from './cors.js';
 
 export * from './schemas.js';
 export * from './plugins.js';
+export * from './prisma.js';
+export * from './cors.js';
 import "dotenv/config";
 
-export function genReqId(req: IncomingMessage): string {
-  return (req.headers['x-request-id'] as string) || randomUUID();
+export function genReqId(req: FastifyRequest | IncomingMessage): string {
+  const reqId = req.headers['x-request-id'];
+  return (Array.isArray(reqId) ? reqId[0] : reqId) || randomUUID();
 }
 
 // ─── Standard error response envelope ─────────────────────────────────────────
@@ -20,6 +25,7 @@ export const ErrorCodes = {
   VALIDATION_ERROR: 'VALIDATION_ERROR',
   INVALID_REQUEST: 'INVALID_REQUEST',
   REQUEST_TIMEOUT: 'REQUEST_TIMEOUT',
+  GATEWAY_TIMEOUT: 'GATEWAY_TIMEOUT',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
   UNSUPPORTED_CURRENCY_PAIR: 'UNSUPPORTED_CURRENCY_PAIR',
   INVALID_AMOUNT: 'INVALID_AMOUNT',
@@ -57,8 +63,8 @@ export const EnvSchema = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_EXPIRES_IN: z.string().default('24h'),
 
-  // CORS — comma-separated origins
-  ALLOWED_ORIGINS: z.string().default('http://localhost:3000'),
+  // CORS — comma-separated origins (parsed to string[] in validateEnv)
+  ALLOWED_ORIGINS: z.string().optional(),
 
   // Database — required; services crash fast if not provided
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
@@ -75,6 +81,7 @@ export const EnvSchema = z.object({
   SETTLEMENT_CONTRACT_ID: z.string().min(1, 'SETTLEMENT_CONTRACT_ID is required'),
   GOVERNANCE_CONTRACT_ID: z.string().min(1, 'GOVERNANCE_CONTRACT_ID is required'),
   ADMIN_ADDRESS: z.string().min(1, 'ADMIN_ADDRESS is required'),
+  ADMIN_SECRET: z.string().min(1, 'ADMIN_SECRET is required'),
 
   // Service URLs (used by gateway to proxy requests)
   FX_ENGINE_URL: z.string().url().default('http://localhost:3002'),
@@ -87,13 +94,25 @@ export const EnvSchema = z.object({
   ),
   RATES_REFRESH_INTERVAL_MS: z.string().transform((s) => parseInt(s, 10)).default('60000'),
   RATES_CACHE_TTL_MS: z.string().transform((s) => parseInt(s, 10)).default('60000'),
+
+  // FX Engine — slippage tolerance (basis points; 100 bps = 1%)
+  DEFAULT_SLIPPAGE_BPS: z.string().transform((s) => parseInt(s, 10)).default('50'),
+  MAX_SLIPPAGE_BPS:     z.string().transform((s) => parseInt(s, 10)).default('500'),
 });
 
-export type Env = z.infer<typeof EnvSchema>;
+export type Env = Omit<z.infer<typeof EnvSchema>, 'ALLOWED_ORIGINS'> & {
+  ALLOWED_ORIGINS: string[];
+};
 
 export function validateEnv(env: Record<string, unknown>): Env {
+  const { origins, error: originsError } = resolveAllowedOrigins(env);
+  if (originsError) {
+    throw new Error(`\n[BettaPay] Invalid or missing environment variables:\n  ALLOWED_ORIGINS: ${originsError}\n`);
+  }
+
   try {
-    return EnvSchema.parse(env);
+    const parsed = EnvSchema.parse(env);
+    return { ...parsed, ALLOWED_ORIGINS: origins };
   } catch (error) {
     if (error instanceof z.ZodError) {
       const message = error.errors.map((e) => `  ${e.path.join('.')}: ${e.message}`).join('\n');

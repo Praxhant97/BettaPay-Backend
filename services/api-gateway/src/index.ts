@@ -17,6 +17,9 @@
  *   PATCH  /api/payments/:id/status  — transition payment status (protected)
  *   POST   /api/settlements          — trigger settlement (protected)
  *   GET    /api/deployments          — Soroban contract addresses (testnet)
+ *   GET    /api/rates                — proxy to FX engine (timeout-aware)
+ *   GET    /api/currencies           — proxy to FX engine (timeout-aware)
+ *   GET    /api/quote                — proxy to FX engine (timeout-aware)
  */
 
 import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
@@ -25,7 +28,7 @@ import fastifyJwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import crypto from 'crypto';
 import { z } from 'zod';
-import { validateEnv } from '@bettapay/validation';
+import { validateEnv, getPrismaLogLevels, setupPrismaQueryLogging, connectWithRetry, genReqId } from '@bettapay/validation';
 import {
   CreateMerchantBody,
   CreatePaymentBody,
@@ -41,6 +44,7 @@ import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
 import helmet from '@fastify/helmet';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { fetchUpstream, UpstreamTimeoutError } from './upstream-fetch.js';
 
 declare module 'fastify' {
   export interface FastifyInstance {
@@ -58,6 +62,7 @@ interface PaymentParams {
 
 interface AuthTokenRouteBody {
   merchantId?: unknown;
+  secret?: unknown;
 }
 
 interface CreateMerchantRouteBody {
@@ -65,6 +70,7 @@ interface CreateMerchantRouteBody {
   name?: unknown;
   ownerId?: unknown;
   settings?: unknown;
+  secret?: unknown;
 }
 
 interface CreatePaymentRouteBody {
@@ -137,9 +143,7 @@ const fastify = Fastify({
   // Limit request body size to 1MB (1,048,576 bytes) to protect the API gateway
   // from oversized payload attacks and align with typical financial transaction payload sizes.
   bodyLimit: 1_048_576,
-  genReqId: function (req) {
-    return (req.headers['x-request-id'] as string) || crypto.randomUUID();
-  }
+  genReqId
 });
 
 registerErrorHandler(fastify);
@@ -255,15 +259,20 @@ fastify.addHook('onSend', async (request, reply, payload) => {
   return payload;
 });
 
+function hashSecret(secret: string): string {
+  return crypto.createHash('sha256').update(secret).digest('hex');
+}
+
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
-const prisma = new PrismaClient({ adapter });
+const prisma = new PrismaClient({ adapter, log: getPrismaLogLevels() });
+setupPrismaQueryLogging(prisma, fastify.log);
 
 // Setup plugins
 fastify.register(helmet, { contentSecurityPolicy: false, hsts: { maxAge: 31536000 }, referrerPolicy: { policy: 'no-referrer' } });
 
 fastify.register(cors, {
-  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  origin: env.ALLOWED_ORIGINS
 });
 
 fastify.register(fastifyJwt, {
@@ -277,7 +286,12 @@ fastify.register(fastifyJwt, {
 fastify.register(rateLimit, {
   max: 1000,
   timeWindow: '1 minute',
-  addHeaders: true
+  addHeaders: {
+    'x-ratelimit-limit': true,
+    'x-ratelimit-remaining': true,
+    'x-ratelimit-reset': true,
+    'retry-after': true
+  }
 });
 
 fastify.register(rateLimit, {
@@ -364,10 +378,17 @@ fastify.get('/api/health', async (request, reply) => {
 fastify.post<{ Body: AuthTokenRouteBody }>('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const d = AuthTokenBody.parse(request.body);
     const merchant = await prisma.merchant.findFirst({ where: { id: d.merchantId, deletedAt: null } });
-    if (!merchant) return reply.code(404).send(createErrorResponse(ErrorCodes.NOT_FOUND, 'Merchant not found'));
 
-    // In a real system, you would verify the secret/password here.
-    // For this example, we'll just issue a token if the merchant exists.
+    const storedHash = merchant?.secretHash || '0'.repeat(64);
+    const inputHash = hashSecret(d.secret);
+    const hashBuffer = Buffer.from(storedHash, 'hex');
+    const inputBuffer = Buffer.from(inputHash, 'hex');
+
+    const isValid = merchant && merchant.secretHash && crypto.timingSafeEqual(hashBuffer, inputBuffer);
+    if (!isValid) {
+      return reply.code(401).send({ error: 'Invalid credentials' });
+    }
+
     const token = fastify.jwt.sign({ merchantId: merchant.id, ownerId: merchant.ownerId });
     return reply.send({ token });
 });
@@ -379,15 +400,18 @@ fastify.post<{ Body: CreateMerchantRouteBody }>('/api/merchants', {
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
     const d = CreateMerchantBody.parse(request.body);
+    const secret = d.secret || crypto.randomBytes(24).toString('hex');
+    const secretHash = hashSecret(secret);
     const merchant = await prisma.merchant.create({
       data: {
         id: d.id,
         name: d.name,
         ownerId: d.ownerId || 'unknown',
-        settings: d.settings ?? {},
+        settings: d.settings as any ?? {},
+        secretHash,
       }
     });
-    return reply.code(201).send({ success: true, merchant });
+    return reply.code(201).send({ success: true, merchant, secret });
 });
 
 fastify.get<{ Params: MerchantParams }>('/api/merchants/:id', {
@@ -645,16 +669,18 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
 
-      const todayTotal = await prisma.settlement.aggregate({
-        _sum: { totalAmount: true },
+      const todaySettlements = await prisma.settlement.findMany({
         where: {
           merchantId: d.merchantId,
           initiatedAt: { gte: todayStart },
         },
+        select: {
+          totalAmount: true
+        }
       });
 
-      const currentDailyTotal = parseFloat(todayTotal._sum.totalAmount || '0');
-      const requestTotal = items.reduce((sum, item) => sum + parseFloat(item.amount), 0);
+      const currentDailyTotal = todaySettlements.reduce((sum: number, s: { totalAmount: string }) => sum + parseFloat(s.totalAmount), 0);
+      const requestTotal = items.reduce((sum: number, item: any) => sum + parseFloat(item.amount), 0);
       const newDailyTotal = currentDailyTotal + requestTotal;
       const dailyLimit = parseFloat(settings.dailySettlementLimit);
 
@@ -724,6 +750,36 @@ fastify.get('/api/deployments', async (request, reply) => {
   };
 });
 
+async function proxyFxUpstream(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  path: string
+) {
+  const targetUrl = new URL(path, env.FX_ENGINE_URL).toString();
+
+  try {
+    const response = await fetchUpstream(request, targetUrl, {}, request.log);
+    const body = await response.text();
+    const contentType = response.headers.get('content-type') ?? 'application/json';
+    return reply.code(response.status).type(contentType).send(body);
+  } catch (err) {
+    if (err instanceof UpstreamTimeoutError) {
+      return reply
+        .code(504)
+        .send(createErrorResponse(ErrorCodes.GATEWAY_TIMEOUT, 'Gateway Timeout'));
+    }
+    throw err;
+  }
+}
+
+fastify.get('/api/rates', async (request, reply) => proxyFxUpstream(request, reply, '/api/rates'));
+fastify.get('/api/currencies', async (request, reply) => proxyFxUpstream(request, reply, '/api/currencies'));
+fastify.get('/api/quote', async (request, reply) => {
+  const query = new URLSearchParams(request.query as Record<string, string>).toString();
+  const path = query ? `/api/quote?${query}` : '/api/quote';
+  return proxyFxUpstream(request, reply, path);
+});
+
 // Graceful shutdown
 let shuttingDown = false;
 
@@ -748,15 +804,22 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 const start = async () => {
   try {
+    await connectWithRetry(prisma, fastify.log);
+
     // Seed admin merchant
+    const adminSecret = env.ADMIN_SECRET;
+    const adminSecretHash = hashSecret(adminSecret);
     await prisma.merchant.upsert({
       where: { id: env.ADMIN_ADDRESS },
-      update: {},
+      update: {
+        secretHash: adminSecretHash
+      },
       create: {
         id: env.ADMIN_ADDRESS,
         name: 'BettaPay Merchant LLC',
         ownerId: 'admin-user-001',
         settings: { preferredAsset: 'USDC', autoSettle: true },
+        secretHash: adminSecretHash
       }
     });
 

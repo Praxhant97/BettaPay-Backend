@@ -175,6 +175,7 @@ export const CreateMerchantBody = z.object({
   name: z.string().min(1, 'name is required'),
   ownerId: z.string().optional(),
   settings: z.record(z.unknown()).optional(),
+  secret: z.string().optional(),
 });
 
 export const CreatePaymentBody = z.object({
@@ -257,3 +258,28 @@ export type CreateSettlementBody = z.infer<typeof CreateSettlementBody>;
 export type AuthTokenBody = z.infer<typeof AuthTokenBody>;
 export type UpdatePaymentStatusBody = z.infer<typeof UpdatePaymentStatusBody>;
 export type UpdateMerchantSettingsBody = z.infer<typeof UpdateMerchantSettingsBody>;
+
+// ─── Indexer types ────────────────────────────────────────────────────────────
+
+export const EVENT_TYPES = [
+  'PaymentInitiated',
+  'PaymentCompleted',
+  'SettlementTriggered',
+  'FXExecuted',
+  'BillPaid',
+  'AnchorSettled'
+] as const;
+
+export type EventType = (typeof EVENT_TYPES)[number];
+
+export interface IndexedEvent {
+  id: string;
+  stellarId?: string | null;
+  contractId: string;
+  topics: string[];
+  type: EventType;
+  rawValue: string;
+  decodedPayload?: unknown;
+  ledger: number;
+  indexedAt: string;
+}
