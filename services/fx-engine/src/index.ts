@@ -57,6 +57,48 @@ let cache: RateCache = {
   cachedAt: Date.now(),
 };
 
+// ── Computed pair-rate cache (issue #55) ───────────────────────────────────
+// Avoids recomputing the same cross/inverse rate on every request.
+// Keyed by "FROM_TO" (e.g. "USDC_EURT", "NGN_USDC").
+// Entries expire after RATE_TTL_MS; the cache is also fully invalidated
+// whenever base rates are refreshed via updateBaseRates().
+
+const RATE_TTL_MS = 60_000;
+
+interface ComputedRateEntry {
+  rate:       number;
+  computedAt: number;
+}
+
+const computedRateCache = new Map<string, ComputedRateEntry>();
+
+function computeRate(from: string, to: string, baseRates: Record<string, number>): number {
+  // NGN is the base (rate === 1.0), so all three cases collapse to one formula:
+  //   direct  (X → NGN):  baseRates[from] / 1          = baseRates[from]
+  //   inverse (NGN → X):  1              / baseRates[to]
+  //   cross   (X → Y):    baseRates[from] / baseRates[to]
+  return baseRates[from] / baseRates[to];
+}
+
+function getOrComputeRate(from: string, to: string): number {
+  const key   = `${from}_${to}`;
+  const now   = Date.now();
+  const entry = computedRateCache.get(key);
+
+  if (entry && now - entry.computedAt < RATE_TTL_MS) {
+    return entry.rate;
+  }
+
+  const rate = computeRate(from, to, cache.rates);
+  computedRateCache.set(key, { rate, computedAt: now });
+  return rate;
+}
+
+function updateBaseRates(newRates: Record<string, number>): void {
+  cache = { rates: newRates, cachedAt: Date.now() };
+  computedRateCache.clear();
+}
+
 const fastify = Fastify({
   logger: true,
   genReqId,
@@ -150,20 +192,18 @@ fastify.get(
       );
     }
 
-    const rates = cache.rates;
-    const amountInNgn  = amount * rates[from];
-    const targetAmount = amountInNgn / rates[to];
-    const exchangeRate = rates[from] / rates[to];
+    const exchangeRate = getOrComputeRate(from, to);
+    const targetAmount = amount * exchangeRate;
 
     return {
       from,
       to,
       amount:        amount.toString(),
       result:        targetAmount.toFixed(4),
-      rate:          exchangeRate.toFixed(4),
+      rate:          exchangeRate.toFixed(8),
       slippageLimit: '0.005',
       cachedAt:      new Date(cache.cachedAt).toISOString(),
-      expiresAt:     new Date(Date.now() + 60_000).toISOString(),
+      expiresAt:     new Date(Date.now() + RATE_TTL_MS).toISOString(),
     };
   },
 );
