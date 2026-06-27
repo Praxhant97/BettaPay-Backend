@@ -5,7 +5,7 @@
  * Polls the Stellar RPC for contract events on the SETTLEMENT_CONTRACT_ID.
  *
  * Endpoints:
- *   GET /api/events              — list indexed events (newest first, max 50)
+ *   GET /api/events              — list indexed events (newest first, paginated)
  *   GET /api/health              — liveness probe
  */
 
@@ -13,46 +13,55 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import crypto from 'crypto';
 import { rpc } from '@stellar/stellar-sdk';
+import { PrismaClient } from '@prisma/client';
 import { validateEnv, registerErrorHandler, PaginationQuery } from '@bettapay/validation';
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3003');
 
 const fastify = Fastify({ logger: true });
+const prisma = new PrismaClient();
 
-fastify.register(cors, { 
-  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
+fastify.register(cors, {
+  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
 });
 registerErrorHandler(fastify);
 
-// In-memory event ring buffer (50 events max)
-const events: any[] = [];
+fastify.addHook('onClose', async () => {
+  await prisma.$disconnect();
+});
+
 let latestLedgerCursor: number | undefined = undefined;
 
-function pushEvent(topic: string, contractId: string, data: Record<string, unknown>, ledger: number) {
-  const event = {
-    id: 'evt_' + crypto.randomUUID().replace(/-/g, ''),
-    contractId,
-    topic,
-    ...data,
-    ledger,
-    indexedAt: new Date().toISOString(),
-  };
-  events.unshift(event);
-  if (events.length > 50) events.pop();
-  fastify.log.info(`[Indexer] ${topic} — ${event.id} (Ledger ${ledger})`);
-  return event;
+async function pushEvent(
+  topic: string,
+  contractId: string,
+  data: Record<string, unknown>,
+  ledger: number,
+) {
+  const id = 'evt_' + crypto.randomUUID().replace(/-/g, '');
+  await prisma.indexedEvent.create({ data: { id, contractId, topic, ledger, data } });
+  fastify.log.info(`[Indexer] ${topic} — ${id} (Ledger ${ledger})`);
+  return id;
 }
 
 // HTTP API
-fastify.get('/api/health', async (request, reply) => {
-  return { status: 'ok', indexedEvents: events.length, latestLedgerCursor };
+fastify.get('/api/health', async (_request, _reply) => {
+  const total = await prisma.indexedEvent.count();
+  return { status: 'ok', indexedEvents: total, latestLedgerCursor };
 });
 
-fastify.get('/api/events', async (request, reply) => {
+fastify.get('/api/events', async (request, _reply) => {
   const { limit, offset } = PaginationQuery.parse(request.query ?? {});
-  const paginatedEvents = events.slice(offset, offset + limit);
-  return { events: paginatedEvents, total: events.length, latestLedgerCursor };
+  const [events, total] = await Promise.all([
+    prisma.indexedEvent.findMany({
+      take: limit,
+      skip: offset,
+      orderBy: { indexedAt: 'desc' },
+    }),
+    prisma.indexedEvent.count(),
+  ]);
+  return { events, total, limit, offset, hasMore: offset + limit < total, latestLedgerCursor };
 });
 
 const server = new rpc.Server(env.STELLAR_RPC_URL, { allowHttp: true });
@@ -80,18 +89,16 @@ async function pollEvents() {
 
     if (response.events && response.events.length > 0) {
       for (const evt of response.events) {
-        // Simple mapping of topics for this demo.
-        // In production, decode XDR values properly.
-        pushEvent(
+        await pushEvent(
           evt.topic.join(','),
           evt.contractId ? evt.contractId.toString() : 'unknown',
           { rawValue: evt.value.toXDR('base64') },
-          evt.ledger
+          evt.ledger,
         );
         latestLedgerCursor = Math.max(latestLedgerCursor, evt.ledger + 1);
       }
     } else {
-      // If no events, just advance cursor by querying latest ledger
+      // No new events — advance cursor to latest ledger
       const latest = await server.getLatestLedger();
       latestLedgerCursor = Math.max(latestLedgerCursor, latest.sequence);
     }
@@ -104,6 +111,15 @@ async function pollEvents() {
 
 const start = async () => {
   try {
+    // Recover cursor from last persisted event so we don't reprocess on restart
+    const latestEvent = await prisma.indexedEvent.findFirst({
+      orderBy: { ledger: 'desc' },
+      select: { ledger: true },
+    });
+    if (latestEvent) {
+      latestLedgerCursor = latestEvent.ledger + 1;
+    }
+
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
     fastify.log.info('[Indexer] Starting Stellar RPC polling loop...');
     pollEvents();

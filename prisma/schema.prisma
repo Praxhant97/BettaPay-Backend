@@ -64,3 +64,15 @@ model Settlement {
   initiatedAt DateTime         @default(now())
   completedAt DateTime?
 }
+
+model IndexedEvent {
+  id         String   @id
+  contractId String
+  topic      String
+  ledger     Int
+  data       Json
+  indexedAt  DateTime @default(now())
+
+  @@index([indexedAt(sort: Desc)])
+  @@index([contractId])
+}
