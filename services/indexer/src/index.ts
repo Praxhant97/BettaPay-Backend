@@ -45,7 +45,18 @@ function pushEvent(topic: string, contractId: string, data: Record<string, unkno
 
 // HTTP API
 fastify.get('/api/health', async (request, reply) => {
-  return { status: 'ok', indexedEvents: events.length, latestLedgerCursor };
+  // Perform RPC reachability check with 5s timeout
+  const rpc = await (async () => {
+    try {
+      const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
+      const latest = await Promise.race([server.getLatestLedger(), timeout]);
+      return { connected: true, latestLedger: (latest as any).sequence };
+    } catch {
+      return { connected: false };
+    }
+  })();
+
+  return { status: 'ok', indexedEvents: events.length, latestLedgerCursor, rpc };
 });
 
 fastify.get('/api/events', async (request, reply) => {
