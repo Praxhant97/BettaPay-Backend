@@ -8,6 +8,8 @@ export * from './schemas.js';
 export * from './plugins.js';
 export * from './prisma.js';
 export * from './cors.js';
+export * from './tracing.js';
+export * from './logger.js';
 import "dotenv/config";
 
 export function genReqId(req: FastifyRequest | IncomingMessage): string {
@@ -56,12 +58,24 @@ export const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().transform((s) => parseInt(s, 10)).default('3000'),
 
+  // Logging — pino level for the shared logger config (#119).
+  LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+    .default('info'),
+
   // Fees — default basis points applied when a merchant has no custom fee rule.
   FEES_DEFAULT_BPS: z.string().transform((s) => parseInt(s, 10)).default('100'),
 
   // Auth
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_EXPIRES_IN: z.string().default('24h'),
+
+  // Inter-service auth — shared secret presented in the `x-service-token` header
+  // on internal (service-to-service) calls. Required so services fail fast
+  // rather than silently trusting an unauthenticated network.
+  INTER_SERVICE_SECRET: z
+    .string()
+    .min(16, 'INTER_SERVICE_SECRET must be at least 16 characters'),
 
   // CORS — comma-separated origins (parsed to string[] in validateEnv)
   ALLOWED_ORIGINS: z.string().optional(),

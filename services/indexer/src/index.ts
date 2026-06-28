@@ -24,20 +24,28 @@ import { z } from 'zod';
 import {
   validateEnv,
   registerErrorHandler,
+  registerServiceAuth,
   PaginationQuery,
   EVENT_TYPES,
   connectWithRetry,
+  createLoggerOptions,
+  registerTracing,
+  genReqId,
 } from '@bettapay/validation';
 import type { EventType } from '@bettapay/validation';
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3003');
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger: createLoggerOptions({ level: env.LOG_LEVEL }), genReqId });
 const prisma = new PrismaClient();
 
 fastify.register(cors, { origin: env.ALLOWED_ORIGINS });
 registerErrorHandler(fastify);
+// Distributed tracing: log + propagate x-request-id / x-trace-id (#118).
+registerTracing(fastify);
+// Inter-service auth: internal endpoints require a valid x-service-token (#117).
+registerServiceAuth(fastify, env.INTER_SERVICE_SECRET);
 
 // Polling state
 let latestLedgerCursor: number | undefined = undefined;
@@ -163,7 +171,8 @@ fastify.get('/api/health', async () => {
 });
 
 // Issue #67 — paginated events endpoint with { total, limit, offset, hasMore }
-fastify.get('/api/events', async (request) => {
+// Internal endpoint — requires a valid x-service-token (#117).
+fastify.get('/api/events', { preValidation: [fastify.serviceAuth] }, async (request) => {
   const { limit, offset } = PaginationQuery.parse(request.query ?? {});
   const typeParam = (request.query as Record<string, unknown>)?.type as string | undefined;
 
