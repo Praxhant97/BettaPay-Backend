@@ -1,4 +1,5 @@
 import type { FastifyBaseLogger, FastifyRequest } from 'fastify';
+import { propagateTracingHeaders } from '@bettapay/validation';
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const DOWNSTREAM_DEADLINE_RATIO = 0.8;
@@ -70,8 +71,14 @@ export async function fetchUpstream(
 ): Promise<Response> {
   const { signal, cleanup } = createDownstreamAbortSignal(request, logger, url, defaultTimeoutMs);
 
+  // Propagate tracing headers (x-request-id / x-trace-id) to the downstream service (#118).
+  const headers = propagateTracingHeaders(
+    request.headers,
+    (init.headers as Record<string, string>) ?? {},
+  );
+
   try {
-    return await fetch(url, { ...init, signal });
+    return await fetch(url, { ...init, headers, signal });
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       throw new UpstreamTimeoutError(`Upstream request to ${url} timed out`);

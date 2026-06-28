@@ -41,6 +41,8 @@ import {
   setupPrismaQueryLogging,
   connectWithRetry,
   genReqId,
+  createLoggerOptions,
+  registerTracing,
 } from "@bettapay/validation";
 
 interface CreateSettlementRouteBody {
@@ -65,7 +67,7 @@ type SettlementJobData = {
 type SettlementRecord = NonNullable<Awaited<ReturnType<typeof prisma.settlement.findUnique>>>;
 
 const fastify = Fastify({
-  logger: true,
+  logger: createLoggerOptions({ level: env.LOG_LEVEL }),
   // Explicitly set body limit to 1MB (Fastify's default)
   bodyLimit: 1_048_576,
   genReqId
@@ -98,6 +100,8 @@ fastify.register(rateLimit, {
 });
 
 registerErrorHandler(fastify);
+// Distributed tracing: log + propagate x-request-id / x-trace-id (#118).
+registerTracing(fastify);
 
 const redisConnection = new URL(env.REDIS_URL);
 const connectionParams = {
