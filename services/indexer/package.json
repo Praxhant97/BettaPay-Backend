@@ -18,7 +18,7 @@
     "bullmq": "*",
     "fastify": "*",
     "@fastify/cors": "*",
-    "@fastify/rate-limit": "*",
+    "@fastify/helmet": "*",
     "ioredis": "*",
     "zod": "^3.22.4"
   },

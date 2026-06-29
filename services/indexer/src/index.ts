@@ -15,12 +15,15 @@
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import crypto from 'crypto';
 import { Redis } from 'ioredis';
 import { Queue, Worker } from 'bullmq';
 import { PrismaClient } from '@prisma/client';
 import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
+import pg from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { z } from 'zod';
 import {
   validateEnv,
@@ -29,9 +32,14 @@ import {
   registerServiceAuth,
   PaginationQuery,
   EVENT_TYPES,
+  buildPrismaConnectionUrl,
   connectWithRetry,
   createLoggerOptions,
+  getPrismaLogLevels,
+  setupPrismaQueryLogging,
   registerTracing,
+  genReqId,
+  createWebhookUrlSchema,
 } from '@bettapay/validation';
 import type { EventType } from '@bettapay/validation';
 
@@ -40,19 +48,22 @@ const PORT = Number(process.env.PORT ?? '3003');
 
 const fastify = Fastify({ logger: createLoggerOptions({ level: env.LOG_LEVEL }) });
 registerRequestId(fastify);
-const prisma = new PrismaClient();
+const pool = new pg.Pool({
+  connectionString: buildPrismaConnectionUrl(env.DATABASE_URL, env.DATABASE_POOL_SIZE, env.DATABASE_POOL_TIMEOUT),
+  max: env.DATABASE_POOL_SIZE,
+  connectionTimeoutMillis: env.DATABASE_POOL_TIMEOUT * 1000,
+});
+const prismaAdapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter: prismaAdapter, log: getPrismaLogLevels() });
+setupPrismaQueryLogging(prisma, fastify.log);
 
 fastify.register(cors, { origin: env.ALLOWED_ORIGINS });
+fastify.register(helmet, { contentSecurityPolicy: false });
 registerErrorHandler(fastify);
 // Distributed tracing: log + propagate x-request-id / x-trace-id (#118).
 registerTracing(fastify);
 // Inter-service auth: internal endpoints require a valid x-service-token (#117).
 registerServiceAuth(fastify, env.INTER_SERVICE_SECRET);
-
-fastify.register(rateLimit, {
-  max: 500,
-  timeWindow: '1 minute'
-});
 
 // Polling state
 let latestLedgerCursor: number | undefined = undefined;
@@ -303,7 +314,7 @@ fastify.route({
 
 // Issue #70 — webhook subscription CRUD
 const WebhookBody = z.object({
-  url: z.string().url('url must be a valid URL'),
+  url: createWebhookUrlSchema(),
 });
 
 fastify.post('/api/webhooks', async (request, reply) => {
@@ -425,8 +436,4 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-if (process.env.NODE_ENV !== 'test') {
-  start();
-}
-
-export { fastify };
+start();

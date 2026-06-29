@@ -1,14 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import {
+  CreateMerchantBody,
+  CreatePaymentBody,
+  CreateSettlementBody,
   DateRangeQuery,
   IdempotencyKeySchema,
   PaginationQuery,
-  CreatePaymentBody,
-  CreateSettlementBody,
-  AmountString,
-  PositiveAmountString,
+  StellarAddressSchema,
+  merchantSchema,
+  paymentSchema,
+  walletSchema,
 } from './schemas.js';
+
+const VALID_STELLAR_PUBLIC_KEY = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+const INVALID_STELLAR_PUBLIC_KEY = 'merchant-1';
 
 test('PaginationQuery validation', async (t) => {
   await t.test('Default limit is 50', () => {
@@ -232,7 +238,7 @@ test('IdempotencyKeySchema validation', async (t) => {
   await t.test('CreatePaymentBody accepts optional idempotencyKey', () => {
     const key = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
     const result = CreatePaymentBody.parse({
-      merchantId: 'merchant-1',
+      merchantId: VALID_STELLAR_PUBLIC_KEY,
       amount: '100.00',
       asset: 'USDC',
       idempotencyKey: key,
@@ -242,7 +248,7 @@ test('IdempotencyKeySchema validation', async (t) => {
 
   await t.test('CreatePaymentBody works without idempotencyKey', () => {
     const result = CreatePaymentBody.parse({
-      merchantId: 'merchant-1',
+      merchantId: VALID_STELLAR_PUBLIC_KEY,
       amount: '100.00',
       asset: 'USDC',
     });
@@ -252,7 +258,7 @@ test('IdempotencyKeySchema validation', async (t) => {
   await t.test('CreatePaymentBody rejects invalid idempotencyKey', () => {
     assert.throws(
       () => CreatePaymentBody.parse({
-        merchantId: 'merchant-1',
+        merchantId: VALID_STELLAR_PUBLIC_KEY,
         amount: '100.00',
         asset: 'USDC',
         idempotencyKey: 'not-a-uuid',
@@ -264,7 +270,7 @@ test('IdempotencyKeySchema validation', async (t) => {
   await t.test('CreateSettlementBody accepts optional idempotencyKey', () => {
     const key = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
     const result = CreateSettlementBody.parse({
-      merchantId: 'merchant-1',
+      merchantId: VALID_STELLAR_PUBLIC_KEY,
       amount: '500.00',
       asset: 'USDC',
       idempotencyKey: key,
@@ -274,7 +280,7 @@ test('IdempotencyKeySchema validation', async (t) => {
 
   await t.test('CreateSettlementBody works without idempotencyKey', () => {
     const result = CreateSettlementBody.parse({
-      merchantId: 'merchant-1',
+      merchantId: VALID_STELLAR_PUBLIC_KEY,
       amount: '500.00',
       asset: 'USDC',
     });
@@ -284,12 +290,97 @@ test('IdempotencyKeySchema validation', async (t) => {
   await t.test('CreateSettlementBody rejects invalid idempotencyKey', () => {
     assert.throws(
       () => CreateSettlementBody.parse({
-        merchantId: 'merchant-1',
+        merchantId: VALID_STELLAR_PUBLIC_KEY,
         amount: '500.00',
         asset: 'USDC',
         idempotencyKey: 'bad-key',
       }),
       /idempotencyKey must be a valid UUID/
     );
+  });
+});
+
+test('StellarAddressSchema validation', async (t) => {
+  await t.test('Valid Stellar public key passes', () => {
+    const result = StellarAddressSchema.parse(VALID_STELLAR_PUBLIC_KEY);
+    assert.strictEqual(result, VALID_STELLAR_PUBLIC_KEY);
+  });
+
+  await t.test('Invalid Stellar public key fails with descriptive message', () => {
+    assert.throws(
+      () => StellarAddressSchema.parse(INVALID_STELLAR_PUBLIC_KEY),
+      /Invalid Stellar public key/
+    );
+  });
+
+  await t.test('CreateMerchantBody validates ownerId as a Stellar address', () => {
+    const result = CreateMerchantBody.parse({
+      id: 'merchant-1',
+      name: 'Betta Merchant',
+      ownerId: VALID_STELLAR_PUBLIC_KEY,
+    });
+
+    assert.strictEqual(result.ownerId, VALID_STELLAR_PUBLIC_KEY);
+  });
+
+  await t.test('CreateMerchantBody rejects invalid ownerId', () => {
+    assert.throws(
+      () => CreateMerchantBody.parse({
+        id: 'merchant-1',
+        name: 'Betta Merchant',
+        ownerId: INVALID_STELLAR_PUBLIC_KEY,
+      }),
+      /Invalid Stellar public key/
+    );
+  });
+
+  await t.test('CreatePaymentBody validates merchantId and payerId as Stellar addresses', () => {
+    const result = CreatePaymentBody.parse({
+      merchantId: VALID_STELLAR_PUBLIC_KEY,
+      payerId: VALID_STELLAR_PUBLIC_KEY,
+      amount: '100.00',
+      asset: 'USDC',
+    });
+
+    assert.strictEqual(result.merchantId, VALID_STELLAR_PUBLIC_KEY);
+    assert.strictEqual(result.payerId, VALID_STELLAR_PUBLIC_KEY);
+  });
+
+  await t.test('CreatePaymentBody rejects invalid merchantId', () => {
+    assert.throws(
+      () => CreatePaymentBody.parse({
+        merchantId: INVALID_STELLAR_PUBLIC_KEY,
+        amount: '100.00',
+        asset: 'USDC',
+      }),
+      /Invalid Stellar public key/
+    );
+  });
+
+  await t.test('Entity schemas use StellarAddressSchema where Stellar addresses are expected', () => {
+    assert.strictEqual(merchantSchema.parse({
+      id: 'merchant-1',
+      name: 'Betta Merchant',
+      ownerId: VALID_STELLAR_PUBLIC_KEY,
+      createdAt: new Date().toISOString(),
+    }).ownerId, VALID_STELLAR_PUBLIC_KEY);
+
+    assert.strictEqual(walletSchema.parse({
+      id: 'wallet-1',
+      ownerId: VALID_STELLAR_PUBLIC_KEY,
+      address: VALID_STELLAR_PUBLIC_KEY,
+      asset: 'USDC',
+      balance: '0',
+    }).address, VALID_STELLAR_PUBLIC_KEY);
+
+    assert.strictEqual(paymentSchema.parse({
+      id: 'payment-1',
+      merchantId: VALID_STELLAR_PUBLIC_KEY,
+      payerId: VALID_STELLAR_PUBLIC_KEY,
+      amount: '100.00',
+      asset: 'USDC',
+      status: 'initiated',
+      createdAt: new Date().toISOString(),
+    }).merchantId, VALID_STELLAR_PUBLIC_KEY);
   });
 });

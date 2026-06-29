@@ -212,11 +212,7 @@ importers:
         specifier: ^5.3.3
         version: 5.9.3
 
-  shared/stellar-utils:
-    dependencies:
-      '@bettapay/shared-types':
-        specifier: workspace:^
-        version: link:../types
+  shared/stellar-utils: {}
 
   shared/types:
     dependencies:
@@ -226,6 +222,9 @@ importers:
 
   shared/validation:
     dependencies:
+      '@bettapay/stellar-utils':
+        specifier: workspace:^
+        version: link:../stellar-utils
       zod:
         specifier: ^3.22.4
         version: 3.25.76
