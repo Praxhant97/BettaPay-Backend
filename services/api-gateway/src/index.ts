@@ -29,6 +29,7 @@ import rateLimit from '@fastify/rate-limit';
 import crypto from 'crypto';
 import { z } from 'zod';
 import { validateEnv, getPrismaLogLevels, setupPrismaQueryLogging, connectWithRetry, registerRequestId, createLoggerOptions, registerTracing } from '@bettapay/validation';
+import { createFxClient } from './clients/fx-client.js';
 import { createIndexerClient } from './clients/indexer-client.js';
 import {
   createSettlementClient,
@@ -83,6 +84,7 @@ interface CreatePaymentRouteBody {
   payerId?: unknown;
   amount?: unknown;
   asset?: unknown;
+  convertTo?: unknown;
   reference?: unknown;
 }
 
@@ -167,6 +169,12 @@ const indexerClient = createIndexerClient({
 
 const settlementClient = createSettlementClient({
   baseUrl: env.SETTLEMENT_ENGINE_URL,
+  serviceToken: env.INTER_SERVICE_SECRET,
+  logger: fastify.log,
+});
+
+const fxClient = createFxClient({
+  baseUrl: env.FX_ENGINE_URL,
   serviceToken: env.INTER_SERVICE_SECRET,
   logger: fastify.log,
 });
@@ -550,6 +558,13 @@ fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
     ? new Date(Date.now() + IDEMPOTENCY_TTL_MS)
     : null;
 
+    const fxQuote = d.convertTo
+      ? await fxClient.getQuote(
+          { from: d.asset, to: d.convertTo, amount: d.amount },
+          request.headers,
+        )
+      : null;
+
     const payment = await prisma.payment.create({
       data: {
         id: 'pay_' + crypto.randomUUID().replace(/-/g, ''),
@@ -568,6 +583,10 @@ fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
       { idempotencyKey, paymentId: payment.id },
       idempotencyKey ? 'Idempotency miss — payment created' : 'Payment created (no idempotency key)'
     );
+
+    if (d.convertTo) {
+      return reply.code(201).send({ ...payment, fxQuote });
+    }
 
     return reply.code(201).send(payment);
 });

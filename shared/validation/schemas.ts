@@ -189,6 +189,7 @@ export const CreatePaymentBody = z.object({
   merchantId: z.string().min(1, 'merchantId is required'),
   amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string'),
   asset: z.string().min(1, 'asset is required'),
+  convertTo: z.string().min(1, 'convertTo is required').optional(),
   payerId: z.string().optional(),
   reference: z.string().optional(),
 });
