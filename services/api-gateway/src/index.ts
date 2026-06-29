@@ -839,23 +839,6 @@ const start = async () => {
   try {
     await connectWithRetry(prisma, fastify.log);
 
-    // Seed admin merchant
-    const adminSecret = env.ADMIN_SECRET;
-    const adminSecretHash = hashSecret(adminSecret);
-    await prisma.merchant.upsert({
-      where: { id: env.ADMIN_ADDRESS },
-      update: {
-        secretHash: adminSecretHash
-      },
-      create: {
-        id: env.ADMIN_ADDRESS,
-        name: 'BettaPay Merchant LLC',
-        ownerId: 'admin-user-001',
-        settings: { preferredAsset: 'USDC', autoSettle: true },
-        secretHash: adminSecretHash
-      }
-    });
-
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
   } catch (err) {
     fastify.log.error(err);
