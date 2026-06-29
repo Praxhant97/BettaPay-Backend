@@ -418,7 +418,7 @@ fastify.post<{ Body: CreateMerchantRouteBody }>('/api/merchants', {
       data: {
         id: d.id,
         name: d.name,
-        ownerId: d.ownerId || 'unknown',
+        ownerId: d.ownerId,
         settings: d.settings as any ?? {},
         secretHash,
       }

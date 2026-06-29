@@ -173,7 +173,7 @@ export function safeParseEvent(raw: unknown) {
 export const CreateMerchantBody = z.object({
   id: z.string().min(1, 'id is required'),
   name: z.string().min(1, 'name is required'),
-  ownerId: z.string().optional(),
+  ownerId: z.string().min(1, 'ownerId is required'),
   settings: z.record(z.unknown()).optional(),
   secret: z.string().optional(),
 });
