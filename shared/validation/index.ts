@@ -85,6 +85,7 @@ export const EnvSchema = z.object({
 
   // Redis — optional, falls back to localhost
   REDIS_URL: z.string().default('redis://localhost:6379'),
+  REDIS_MAX_RETRIES: z.string().transform((s) => parseInt(s, 10)).default('3'),
 
   // Stellar
   STELLAR_RPC_URL: z.string().url().default('https://soroban-testnet.stellar.org'),
