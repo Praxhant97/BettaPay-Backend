@@ -132,6 +132,9 @@ importers:
 
   services/settlement-engine:
     dependencies:
+      '@bettapay/shared-types':
+        specifier: workspace:^
+        version: link:../../shared/types
       '@bettapay/validation':
         specifier: workspace:*
         version: link:../../shared/validation
@@ -179,7 +182,11 @@ importers:
         specifier: ^5.3.3
         version: 5.9.3
 
-  shared/stellar-utils: {}
+  shared/stellar-utils:
+    dependencies:
+      '@bettapay/shared-types':
+        specifier: workspace:^
+        version: link:../types
 
   shared/types:
     dependencies:

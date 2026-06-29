@@ -4,6 +4,7 @@
  */
 
 import { StrKey } from '@stellar/stellar-sdk';
+import type { Amount, Stroops } from '@bettapay/shared-types';
 
 export function validateStellarAddress(address: string): boolean {
   return StrKey.isValidEd25519PublicKey(address);
@@ -73,7 +74,7 @@ export function buildSetOptionsOp(params: {
 }
 
 // Convert decimal string to stroops (string of integer stroops)
-export function toStellarAmount(decimalStr: string, decimals = 7): string {
+export function toStellarAmount(decimalStr: Amount, decimals = 7): Stroops {
   // naive conversion: multiply decimal by 10^decimals
   const [whole, frac = ''] = decimalStr.split('.');
   const paddedFrac = (frac + '0'.repeat(decimals)).slice(0, decimals);
@@ -81,14 +82,14 @@ export function toStellarAmount(decimalStr: string, decimals = 7): string {
   return stroops.toString();
 }
 
-export function fromStellarAmount(stroopsStr: string, decimals = 7): string {
+export function fromStellarAmount(stroopsStr: Stroops, decimals = 7): Amount {
   const n = BigInt(stroopsStr);
   const whole = n / BigInt(10 ** decimals);
   const frac = (n % BigInt(10 ** decimals)).toString().padStart(decimals, '0').replace(/0+$/,'');
   return frac ? `${whole.toString()}.${frac}` : whole.toString();
 }
 
-export function formatAmount(amount: string, decimals: number = 7): string {
+export function formatAmount(amount: Stroops, decimals: number = 7): Amount {
   // Provided for backwards compatibility: expects stroops input
   try {
     return fromStellarAmount(amount, decimals);
@@ -97,7 +98,7 @@ export function formatAmount(amount: string, decimals: number = 7): string {
   }
 }
 
-export function buildPaymentOperation(params: { source?: string; destination: string; asset: string; amount: string }){
+export function buildPaymentOperation(params: { source?: string; destination: string; asset: string; amount: Amount }){
   // Placeholder: return normalized operation object
   return {
     type: 'payment',
