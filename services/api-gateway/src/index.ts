@@ -28,8 +28,12 @@ import fastifyJwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import crypto from 'crypto';
 import { z } from 'zod';
-import { validateEnv, getPrismaLogLevels, setupPrismaQueryLogging, connectWithRetry, genReqId, createLoggerOptions, registerTracing } from '@bettapay/validation';
+import { validateEnv, getPrismaLogLevels, setupPrismaQueryLogging, connectWithRetry, registerRequestId, createLoggerOptions, registerTracing } from '@bettapay/validation';
 import { createIndexerClient } from './clients/indexer-client.js';
+import {
+  createSettlementClient,
+  SettlementEngineUnavailableError,
+} from './clients/settlement-client.js';
 import {
   CreateMerchantBody,
   CreatePaymentBody,
@@ -144,8 +148,9 @@ const fastify = Fastify({
   // Limit request body size to 1MB (1,048,576 bytes) to protect the API gateway
   // from oversized payload attacks and align with typical financial transaction payload sizes.
   bodyLimit: 1_048_576,
-  genReqId
 });
+
+registerRequestId(fastify);
 
 registerErrorHandler(fastify);
 // Distributed tracing: normalise x-request-id / x-trace-id and bind to the
@@ -156,6 +161,12 @@ registerTracing(fastify);
 // Enrichment is best-effort: indexer failures degrade to payment-only responses.
 const indexerClient = createIndexerClient({
   baseUrl: env.INDEXER_URL,
+  serviceToken: env.INTER_SERVICE_SECRET,
+  logger: fastify.log,
+});
+
+const settlementClient = createSettlementClient({
+  baseUrl: env.SETTLEMENT_ENGINE_URL,
   serviceToken: env.INTER_SERVICE_SECRET,
   logger: fastify.log,
 });
@@ -418,7 +429,7 @@ fastify.post<{ Body: CreateMerchantRouteBody }>('/api/merchants', {
       data: {
         id: d.id,
         name: d.name,
-        ownerId: d.ownerId || 'unknown',
+        ownerId: d.ownerId,
         settings: d.settings as any ?? {},
         secretHash,
       }
@@ -652,8 +663,6 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
       dailySettlementLimit?: string;
     } | null | undefined;
 
-    const webhookUrl = settings?.webhookUrl || null;
-
     // Normalize to items array (backward compatibility: single amount/asset becomes single-item batch)
     const items = d.items || (d.amount && d.asset ? [{ amount: d.amount, asset: d.asset }] : []);
 
@@ -719,37 +728,20 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
       }
     }
 
-    // Create settlements (multi-asset batch or single)
-    const batchId = 'batch_' + crypto.randomUUID().replace(/-/g, '');
-    const settlements = await Promise.all(
-      items.map((item) =>
-        prisma.settlement.create({
-          data: {
-            id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
-            merchantId: d.merchantId,
-            totalAmount: item.amount,
-            grossAmount: item.amount,
-            feeAmount: '0',
-            netAmount: item.amount,
-            feeBps: 0,
-            asset: item.asset,
-            status: 'pending',
-            webhookUrl,
-            batchId: items.length > 1 ? batchId : null,
-          },
-        })
-      )
-    );
-
-    // Return single settlement or batch
-    if (settlements.length === 1) {
-      return reply.code(201).send(settlements[0]);
-    } else {
-      return reply.code(201).send({
-        batchId,
-        settlements,
-        total: settlements.length,
-      });
+    try {
+      const settlementResponse = await settlementClient.createSettlement(d, request.headers);
+      return reply
+        .code(settlementResponse.status)
+        .type(settlementResponse.contentType)
+        .send(settlementResponse.body);
+    } catch (err) {
+      if (err instanceof SettlementEngineUnavailableError) {
+        request.log.warn({ err }, 'settlement-engine unavailable during settlement creation');
+        return reply
+          .code(504)
+          .send(createErrorResponse(ErrorCodes.GATEWAY_TIMEOUT, 'Settlement engine unavailable'));
+      }
+      throw err;
     }
 });
 

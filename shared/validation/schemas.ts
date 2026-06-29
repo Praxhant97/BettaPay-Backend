@@ -21,6 +21,13 @@ export const merchantSchema = z.object({
   settings: z.record(z.any()).optional()
 });
 
+// Fee rule extracted from merchant settings (feeBps in basis points, 0-10000)
+export const FeeRule = z.object({
+  feeBps: z.number().int().min(0).max(10000),
+  tier: z.string().optional(),
+});
+export type FeeRule = z.infer<typeof FeeRule>;
+
 export const walletSchema = z.object({
   id: idSchema,
   ownerId: idSchema,
@@ -173,7 +180,7 @@ export function safeParseEvent(raw: unknown) {
 export const CreateMerchantBody = z.object({
   id: z.string().min(1, 'id is required'),
   name: z.string().min(1, 'name is required'),
-  ownerId: z.string().optional(),
+  ownerId: z.string().min(1, 'ownerId is required'),
   settings: z.record(z.unknown()).optional(),
   secret: z.string().optional(),
 });
