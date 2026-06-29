@@ -4,7 +4,9 @@
  */
 
 import { StrKey } from '@stellar/stellar-sdk';
-import type { Amount, Stroops } from '@bettapay/shared-types';
+
+type Amount = string;
+type Stroops = string;
 
 export function validateStellarAddress(address: string): boolean {
   return StrKey.isValidEd25519PublicKey(address);
