@@ -112,6 +112,101 @@ test('DateRangeQuery validation', async (t) => {
   });
 });
 
+test('AmountString validation', async (t) => {
+  await t.test('Valid numeric strings pass', () => {
+    assert.strictEqual(AmountString.parse('123'), '123');
+    assert.strictEqual(AmountString.parse('0'), '0');
+    assert.strictEqual(AmountString.parse('12.34'), '12.34');
+    assert.strictEqual(AmountString.parse('0.0'), '0.0');
+  });
+
+  await t.test('Invalid numeric strings fail', () => {
+    assert.throws(() => AmountString.parse('abc'), /amount must be a numeric string/);
+    assert.throws(() => AmountString.parse('12.34.56'), /amount must be a numeric string/);
+    assert.throws(() => AmountString.parse('-12.3'), /amount must be a numeric string/);
+  });
+});
+
+test('PositiveAmountString validation', async (t) => {
+  await t.test('Positive numeric strings pass', () => {
+    assert.strictEqual(PositiveAmountString.parse('123'), '123');
+    assert.strictEqual(PositiveAmountString.parse('12.34'), '12.34');
+    assert.strictEqual(PositiveAmountString.parse('0.01'), '0.01');
+  });
+
+  await t.test('Zero fails', () => {
+    assert.throws(() => PositiveAmountString.parse('0'), /Amount must be greater than zero/);
+    assert.throws(() => PositiveAmountString.parse('0.0'), /Amount must be greater than zero/);
+  });
+
+  await t.test('Negative values fail', () => {
+    assert.throws(() => PositiveAmountString.parse('-1'), /amount must be a numeric string/);
+    assert.throws(() => PositiveAmountString.parse('-0.01'), /amount must be a numeric string/);
+  });
+});
+
+test('CreatePaymentBody validation', async (t) => {
+  await t.test('Valid payment body passes', () => {
+    const valid = {
+      merchantId: 'mer_123',
+      amount: '100.50',
+      asset: 'USDC',
+    };
+    const result = CreatePaymentBody.parse(valid);
+    assert.deepStrictEqual(result, valid);
+  });
+
+  await t.test('Invalid amount in payment body fails', () => {
+    assert.throws(() => CreatePaymentBody.parse({
+      merchantId: 'mer_123',
+      amount: 'abc',
+      asset: 'USDC',
+    }), /amount must be a numeric string/);
+  });
+});
+
+test('CreateSettlementBody validation', async (t) => {
+  await t.test('Valid single settlement passes', () => {
+    const valid = {
+      merchantId: 'mer_123',
+      amount: '500',
+      asset: 'EURT',
+    };
+    const result = CreateSettlementBody.parse(valid);
+    assert.deepStrictEqual(result, valid);
+  });
+
+  await t.test('Valid batch settlement passes', () => {
+    const valid = {
+      merchantId: 'mer_123',
+      items: [
+        { amount: '100.50', asset: 'USDC' },
+        { amount: '200', asset: 'EURT' },
+      ],
+    };
+    const result = CreateSettlementBody.parse(valid);
+    assert.deepStrictEqual(result, valid);
+  });
+
+  await t.test('Invalid amount in single settlement fails', () => {
+    assert.throws(() => CreateSettlementBody.parse({
+      merchantId: 'mer_123',
+      amount: '-50',
+      asset: 'EURT',
+    }), /amount must be a numeric string/);
+  });
+
+  await t.test('Invalid amount in batch settlement items fails', () => {
+    assert.throws(() => CreateSettlementBody.parse({
+      merchantId: 'mer_123',
+      items: [
+        { amount: '100.50', asset: 'USDC' },
+        { amount: 'abc', asset: 'EURT' },
+      ],
+    }), /amount must be a numeric string/);
+  });
+});
+
 test('IdempotencyKeySchema validation', async (t) => {
   await t.test('Valid UUID v4 passes', () => {
     const key = '550e8400-e29b-41d4-a716-446655440000';
