@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { DateRangeQuery, PaginationQuery } from './schemas.js';
+import { DateRangeQuery, IdempotencyKeySchema, PaginationQuery, CreatePaymentBody, CreateSettlementBody } from './schemas.js';
 
 test('PaginationQuery validation', async (t) => {
   await t.test('Default limit is 50', () => {
@@ -95,5 +95,98 @@ test('DateRangeQuery validation', async (t) => {
     const result = DateRangeQuery.parse({});
     assert.strictEqual(result.from, undefined);
     assert.ok(result.to); // Default applies
+  });
+});
+
+test('IdempotencyKeySchema validation', async (t) => {
+  await t.test('Valid UUID v4 passes', () => {
+    const key = '550e8400-e29b-41d4-a716-446655440000';
+    const result = IdempotencyKeySchema.parse(key);
+    assert.strictEqual(result, key);
+  });
+
+  await t.test('Non-UUID string fails', () => {
+    assert.throws(
+      () => IdempotencyKeySchema.parse('not-a-uuid'),
+      /idempotencyKey must be a valid UUID/
+    );
+  });
+
+  await t.test('Empty string fails', () => {
+    assert.throws(
+      () => IdempotencyKeySchema.parse(''),
+      /idempotencyKey must be a valid UUID/
+    );
+  });
+
+  await t.test('UUID with wrong format fails', () => {
+    assert.throws(
+      () => IdempotencyKeySchema.parse('550e8400-e29b-41d4-a716'),
+      /idempotencyKey must be a valid UUID/
+    );
+  });
+
+  await t.test('CreatePaymentBody accepts optional idempotencyKey', () => {
+    const key = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
+    const result = CreatePaymentBody.parse({
+      merchantId: 'merchant-1',
+      amount: '100.00',
+      asset: 'USDC',
+      idempotencyKey: key,
+    });
+    assert.strictEqual(result.idempotencyKey, key);
+  });
+
+  await t.test('CreatePaymentBody works without idempotencyKey', () => {
+    const result = CreatePaymentBody.parse({
+      merchantId: 'merchant-1',
+      amount: '100.00',
+      asset: 'USDC',
+    });
+    assert.strictEqual(result.idempotencyKey, undefined);
+  });
+
+  await t.test('CreatePaymentBody rejects invalid idempotencyKey', () => {
+    assert.throws(
+      () => CreatePaymentBody.parse({
+        merchantId: 'merchant-1',
+        amount: '100.00',
+        asset: 'USDC',
+        idempotencyKey: 'not-a-uuid',
+      }),
+      /idempotencyKey must be a valid UUID/
+    );
+  });
+
+  await t.test('CreateSettlementBody accepts optional idempotencyKey', () => {
+    const key = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11';
+    const result = CreateSettlementBody.parse({
+      merchantId: 'merchant-1',
+      amount: '500.00',
+      asset: 'USDC',
+      idempotencyKey: key,
+    });
+    assert.strictEqual(result.idempotencyKey, key);
+  });
+
+  await t.test('CreateSettlementBody works without idempotencyKey', () => {
+    const result = CreateSettlementBody.parse({
+      merchantId: 'merchant-1',
+      amount: '500.00',
+      asset: 'USDC',
+    });
+    assert.strictEqual(result.idempotencyKey, undefined);
+  });
+
+  await t.test('CreateSettlementBody rejects invalid idempotencyKey', () => {
+    assert.throws(
+      () => CreateSettlementBody.parse({
+        merchantId: 'merchant-1',
+        amount: '500.00',
+        asset: 'USDC',
+        idempotencyKey: 'bad-key',
+      }),
+      /idempotencyKey must be a valid UUID/
+    );
   });
 });

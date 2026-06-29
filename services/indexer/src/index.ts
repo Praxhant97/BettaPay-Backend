@@ -15,6 +15,7 @@
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import rateLimit from '@fastify/rate-limit';
 import crypto from 'crypto';
 import { Redis } from 'ioredis';
 import { Queue, Worker } from 'bullmq';
@@ -24,6 +25,7 @@ import { z } from 'zod';
 import {
   validateEnv,
   registerErrorHandler,
+  registerRequestId,
   registerServiceAuth,
   PaginationQuery,
   EVENT_TYPES,
@@ -38,7 +40,8 @@ import type { EventType } from '@bettapay/validation';
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3003');
 
-const fastify = Fastify({ logger: createLoggerOptions({ level: env.LOG_LEVEL }), genReqId });
+const fastify = Fastify({ logger: createLoggerOptions({ level: env.LOG_LEVEL }) });
+registerRequestId(fastify);
 const prisma = new PrismaClient();
 
 fastify.register(cors, { origin: env.ALLOWED_ORIGINS });
@@ -50,6 +53,7 @@ registerServiceAuth(fastify, env.INTER_SERVICE_SECRET);
 
 // Polling state
 let latestLedgerCursor: number | undefined = undefined;
+let latestLedgerSequence: number | undefined = undefined;
 const BASE_BACKOFF = 1000;
 const MAX_BACKOFF = 30000;
 let currentBackoff = BASE_BACKOFF;
@@ -168,7 +172,10 @@ async function persistEvent(
 // ── HTTP API ──────────────────────────────────────────────────────────────────
 
 fastify.get('/api/health', async () => {
-  return { status: 'ok', latestLedgerCursor };
+  const lag = latestLedgerSequence !== undefined && latestLedgerCursor !== undefined
+    ? latestLedgerSequence - latestLedgerCursor
+    : 0;
+  return { status: 'ok', latestLedgerCursor, lag };
 });
 
 // Issue #67 — paginated events endpoint with { total, limit, offset, hasMore }
@@ -309,10 +316,17 @@ fastify.delete<{ Params: { id: string } }>('/api/webhooks/:id', async (request, 
 const server = new rpc.Server(env.STELLAR_RPC_URL, { allowHttp: true });
 
 async function pollEvents() {
+  // On each poll, fetch the latest Stellar ledger to track lag
+  try {
+    const latest = await server.getLatestLedger();
+    latestLedgerSequence = latest.sequence;
+  } catch {
+    // Cannot reach the network; keep the previous sequence for lag computation
+  }
+
   try {
     if (!latestLedgerCursor) {
-      const latest = await server.getLatestLedger();
-      latestLedgerCursor = latest.sequence;
+      latestLedgerCursor = latestLedgerSequence;
     }
 
     const response = await server.getEvents({
@@ -338,9 +352,16 @@ async function pollEvents() {
         await persistEvent(stellarId, topics, topics[0], contractId, rawValue, decodedPayload, evt.ledger);
         latestLedgerCursor = Math.max(latestLedgerCursor, evt.ledger + 1);
       }
-    } else {
-      const latest = await server.getLatestLedger();
-      latestLedgerCursor = Math.max(latestLedgerCursor, latest.sequence);
+    } else if (latestLedgerSequence !== undefined) {
+      latestLedgerCursor = Math.max(latestLedgerCursor, latestLedgerSequence);
+    }
+
+    // Warn if the indexer is too far behind the network tip
+    if (latestLedgerSequence !== undefined && latestLedgerCursor !== undefined) {
+      const lag = latestLedgerSequence - latestLedgerCursor;
+      if (lag > env.INDEXER_LAG_WARN_THRESHOLD) {
+        fastify.log.warn({ lag, threshold: env.INDEXER_LAG_WARN_THRESHOLD }, '[Indexer] Indexer lag exceeds threshold');
+      }
     }
 
     currentBackoff = BASE_BACKOFF;

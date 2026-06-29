@@ -9,6 +9,7 @@ export * from './plugins.js';
 export * from './prisma.js';
 export * from './cors.js';
 export * from './tracing.js';
+export * from './fastify-plugins.js';
 export * from './logger.js';
 export * from './envAwareSchema.js';
 export * from './webhookSchema.js';
@@ -87,6 +88,7 @@ export const EnvSchema = z.object({
 
   // Redis — optional, falls back to localhost
   REDIS_URL: z.string().default('redis://localhost:6379'),
+  REDIS_MAX_RETRIES: z.string().transform((s) => parseInt(s, 10)).default('3'),
 
   // Stellar
   STELLAR_RPC_URL: z.string().url().default('https://soroban-testnet.stellar.org'),
@@ -114,6 +116,9 @@ export const EnvSchema = z.object({
   // FX Engine — slippage tolerance (basis points; 100 bps = 1%)
   DEFAULT_SLIPPAGE_BPS: z.string().transform((s) => parseInt(s, 10)).default('50'),
   MAX_SLIPPAGE_BPS:     z.string().transform((s) => parseInt(s, 10)).default('500'),
+
+  // Indexer — lag warning threshold (number of ledgers behind the Stellar tip)
+  INDEXER_LAG_WARN_THRESHOLD: z.string().transform((s) => parseInt(s, 10)).default('10'),
 });
 
 export type Env = Omit<z.infer<typeof EnvSchema>, 'ALLOWED_ORIGINS'> & {

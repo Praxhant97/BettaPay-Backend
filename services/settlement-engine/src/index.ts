@@ -34,13 +34,14 @@ import {
   validateEnv,
   CreateSettlementBody,
   registerErrorHandler,
+  registerRequestId,
   createErrorResponse,
   ErrorCodes,
+  FeeRule,
   SettlementListQuery,
   getPrismaLogLevels,
   setupPrismaQueryLogging,
   connectWithRetry,
-  genReqId,
   createLoggerOptions,
   registerTracing,
 } from "@bettapay/validation";
@@ -70,9 +71,9 @@ const fastify = Fastify({
   logger: createLoggerOptions({ level: env.LOG_LEVEL }),
   // Explicitly set body limit to 1MB (Fastify's default)
   bodyLimit: 1_048_576,
-  genReqId
 });
 
+registerRequestId(fastify);
 setupPrismaQueryLogging(prisma, fastify.log);
 
 const redis = new Redis(env.REDIS_URL);
@@ -107,7 +108,8 @@ const redisConnection = new URL(env.REDIS_URL);
 const connectionParams = {
   host: redisConnection.hostname,
   port: parseInt(redisConnection.port || '6379', 10),
-  maxRetriesPerRequest: 3,
+  maxRetriesPerRequest: env.REDIS_MAX_RETRIES,
+  enableReadyCheck: false,
   retryStrategy: (times: number) => {
     if (times > 10) return null;
     const delay = Math.min(times * 1000, 30000);
@@ -566,9 +568,9 @@ fastify.post<{ Body: CreateSettlementRouteBody }>(
     }
 
     const merchant = await prisma.merchant.findUnique({ where: { id: d.merchantId } });
-    const settings = merchant?.settings as { feeBps?: number; webhookUrl?: string } | null | undefined;
-    const feeBps = typeof settings?.feeBps === 'number' && Number.isFinite(settings.feeBps) ? settings.feeBps : env.FEES_DEFAULT_BPS;
-    const webhookUrl = settings?.webhookUrl || null;
+    const parsedFeeRule = FeeRule.passthrough().safeParse(merchant?.settings);
+    const feeBps = parsedFeeRule.success ? parsedFeeRule.data.feeBps : env.FEES_DEFAULT_BPS;
+    const webhookUrl = parsedFeeRule.success ? (parsedFeeRule.data as Record<string, unknown>).webhookUrl as string ?? null : null;
 
     const { grossAmount, feeAmount, netAmount } = computeSettlementAmounts(d.amount, feeBps);
 

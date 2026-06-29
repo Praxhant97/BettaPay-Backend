@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  axios: ^1.7.4
-
 importers:
 
   .:
@@ -144,12 +141,24 @@ importers:
       '@types/node':
         specifier: ^20.10.0
         version: 20.19.43
+      '@types/tape':
+        specifier: ^5.6.4
+        version: 5.8.1
+      cross-env:
+        specifier: ^7.0.3
+        version: 7.0.3
+      tape:
+        specifier: ^5.9.0
+        version: 5.10.2
       typescript:
         specifier: ^5.3.3
         version: 5.9.3
 
   services/settlement-engine:
     dependencies:
+      '@bettapay/shared-types':
+        specifier: workspace:^
+        version: link:../../shared/types
       '@bettapay/validation':
         specifier: workspace:*
         version: link:../../shared/validation
@@ -197,7 +206,11 @@ importers:
         specifier: ^5.3.3
         version: 5.9.3
 
-  shared/stellar-utils: {}
+  shared/stellar-utils:
+    dependencies:
+      '@bettapay/shared-types':
+        specifier: workspace:^
+        version: link:../types
 
   shared/types:
     dependencies:
