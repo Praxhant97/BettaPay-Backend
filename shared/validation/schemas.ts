@@ -177,6 +177,12 @@ export function safeParseEvent(raw: unknown) {
 
 // ─── Request Body Schemas (used by API Gateway route handlers) ────────────────
 
+// Idempotency key must be a valid UUID v4 (e.g. "550e8400-e29b-41d4-a716-446655440000").
+// Clients should generate a new key per unique operation and reuse the same key
+// on retries so the server can safely deduplicate requests.
+export const IdempotencyKeySchema = z.string().uuid({ message: 'idempotencyKey must be a valid UUID' });
+export type IdempotencyKey = z.infer<typeof IdempotencyKeySchema>;
+
 export const CreateMerchantBody = z.object({
   id: z.string().min(1, 'id is required'),
   name: z.string().min(1, 'name is required'),
@@ -192,6 +198,7 @@ export const CreatePaymentBody = z.object({
   convertTo: z.string().min(1, 'convertTo is required').optional(),
   payerId: z.string().optional(),
   reference: z.string().optional(),
+  idempotencyKey: IdempotencyKeySchema.optional(),
 });
 
 export const CreateSettlementBody = z.object({
@@ -202,6 +209,7 @@ export const CreateSettlementBody = z.object({
     amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string'),
     asset: z.string().min(1, 'asset is required'),
   })).optional(),
+  idempotencyKey: IdempotencyKeySchema.optional(),
 }).refine((data) => {
   // Either single amount/asset OR items array must be provided, not both
   const hasSingleAsset = data.amount && data.asset;
