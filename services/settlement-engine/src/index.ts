@@ -36,6 +36,7 @@ import {
   registerErrorHandler,
   createErrorResponse,
   ErrorCodes,
+  FeeRule,
   SettlementListQuery,
   getPrismaLogLevels,
   setupPrismaQueryLogging,
@@ -566,9 +567,9 @@ fastify.post<{ Body: CreateSettlementRouteBody }>(
     }
 
     const merchant = await prisma.merchant.findUnique({ where: { id: d.merchantId } });
-    const settings = merchant?.settings as { feeBps?: number; webhookUrl?: string } | null | undefined;
-    const feeBps = typeof settings?.feeBps === 'number' && Number.isFinite(settings.feeBps) ? settings.feeBps : env.FEES_DEFAULT_BPS;
-    const webhookUrl = settings?.webhookUrl || null;
+    const parsedFeeRule = FeeRule.passthrough().safeParse(merchant?.settings);
+    const feeBps = parsedFeeRule.success ? parsedFeeRule.data.feeBps : env.FEES_DEFAULT_BPS;
+    const webhookUrl = parsedFeeRule.success ? (parsedFeeRule.data as Record<string, unknown>).webhookUrl as string ?? null : null;
 
     const { grossAmount, feeAmount, netAmount } = computeSettlementAmounts(d.amount, feeBps);
 
