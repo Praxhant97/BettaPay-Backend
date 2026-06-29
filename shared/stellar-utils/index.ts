@@ -73,9 +73,23 @@ export function buildSetOptionsOp(params: {
   };
 }
 
-// Convert decimal string to stroops (string of integer stroops)
+/**
+ * Converts a decimal string amount to Stellar stroops (the smallest unit).
+ *
+ * Expected format: a non-negative decimal string matching `/^\d+(\.\d+)?$/`
+ * (e.g. `"100"`, `"0.5"`, `"100.0000001"`). Negative numbers, empty strings,
+ * scientific notation, and leading/trailing spaces are all rejected.
+ * If the fractional part has more digits than `decimals`, excess digits are truncated.
+ *
+ * @param decimalStr - Non-negative numeric string representing the amount.
+ * @param decimals   - Number of decimal places for the asset (default 7, matching XLM/USDC).
+ * @returns The equivalent amount expressed as a string of integer stroops.
+ * @throws {TypeError} If `decimalStr` is not a valid non-negative numeric string.
+ */
 export function toStellarAmount(decimalStr: Amount, decimals = 7): Stroops {
-  // naive conversion: multiply decimal by 10^decimals
+  if (!/^\d+(\.\d+)?$/.test(decimalStr)) {
+    throw new TypeError('toStellarAmount: input must be a valid numeric string');
+  }
   const [whole, frac = ''] = decimalStr.split('.');
   const paddedFrac = (frac + '0'.repeat(decimals)).slice(0, decimals);
   const stroops = BigInt(whole || '0') * BigInt(10 ** decimals) + BigInt(paddedFrac || '0');
