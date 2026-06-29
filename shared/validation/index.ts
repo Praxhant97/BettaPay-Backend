@@ -112,6 +112,9 @@ export const EnvSchema = z.object({
   // FX Engine — slippage tolerance (basis points; 100 bps = 1%)
   DEFAULT_SLIPPAGE_BPS: z.string().transform((s) => parseInt(s, 10)).default('50'),
   MAX_SLIPPAGE_BPS:     z.string().transform((s) => parseInt(s, 10)).default('500'),
+
+  // Indexer — lag warning threshold (number of ledgers behind the Stellar tip)
+  INDEXER_LAG_WARN_THRESHOLD: z.string().transform((s) => parseInt(s, 10)).default('10'),
 });
 
 export type Env = Omit<z.infer<typeof EnvSchema>, 'ALLOWED_ORIGINS'> & {
