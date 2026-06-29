@@ -175,6 +175,17 @@ export function safeParseEvent(raw: unknown) {
   return eventSchemas.safeParse(raw);
 }
 
+// ─── Health Check Schemas ──────────────────────────────────────────────────────
+
+export const HealthStatus = z.enum(['healthy', 'degraded', 'unhealthy']);
+export type HealthStatus = z.infer<typeof HealthStatus>;
+
+export const HealthResponse = z.object({
+  status: HealthStatus,
+  uptime: z.number().optional(),
+});
+export type HealthResponse = z.infer<typeof HealthResponse>;
+
 // ─── Request Body Schemas (used by API Gateway route handlers) ────────────────
 
 export const CreateMerchantBody = z.object({
