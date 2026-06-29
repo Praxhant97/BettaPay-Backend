@@ -33,6 +33,8 @@ import {
   connectWithRetry,
   createLoggerOptions,
   registerTracing,
+  genReqId,
+  createWebhookUrlSchema,
 } from '@bettapay/validation';
 import type { EventType } from '@bettapay/validation';
 
@@ -51,17 +53,7 @@ registerTracing(fastify);
 // Inter-service auth: internal endpoints require a valid x-service-token (#117).
 registerServiceAuth(fastify, env.INTER_SERVICE_SECRET);
 
-<<<<<<< HEAD
 // Polling state
-=======
-fastify.register(rateLimit, {
-  max: 500,
-  timeWindow: '1 minute'
-});
-
-// In-memory event ring buffer (50 events max)
-const events: any[] = [];
->>>>>>> 35d765e (.)
 let latestLedgerCursor: number | undefined = undefined;
 let latestLedgerSequence: number | undefined = undefined;
 const BASE_BACKOFF = 1000;
@@ -217,7 +209,6 @@ fastify.get('/api/events', { preValidation: [fastify.serviceAuth] }, async (requ
   return { events: dbEvents, total, limit, offset, hasMore, latestLedgerCursor };
 });
 
-<<<<<<< HEAD
 // Issue #68 — replay historical events for a ledger range
 const ReplayBody = z.object({
   fromLedger: z.number().int().min(1),
@@ -295,7 +286,7 @@ fastify.post('/api/events/replay', async (request, reply) => {
 
 // Issue #70 — webhook subscription CRUD
 const WebhookBody = z.object({
-  url: z.string().url('url must be a valid URL'),
+  url: createWebhookUrlSchema(),
 });
 
 fastify.post('/api/webhooks', async (request, reply) => {
@@ -324,22 +315,6 @@ fastify.delete<{ Params: { id: string } }>('/api/webhooks/:id', async (request, 
 
 // ── Stellar RPC polling loop ──────────────────────────────────────────────────
 
-=======
-fastify.route({
-  method: ['GET', 'POST'],
-  url: '/api/events/replay',
-  config: {
-    rateLimit: {
-      max: 60,
-      timeWindow: '1 minute'
-    }
-  },
-  handler: async (request, reply) => {
-    return { status: 'ok', replayed: true };
-  }
-});
-
->>>>>>> 35d765e (.)
 const server = new rpc.Server(env.STELLAR_RPC_URL, { allowHttp: true });
 
 async function pollEvents() {
@@ -416,7 +391,6 @@ const start = async () => {
   }
 };
 
-<<<<<<< HEAD
 process.on('SIGTERM', async () => {
   await prisma.$disconnect();
   await webhookQueue.close();
@@ -426,10 +400,3 @@ process.on('SIGTERM', async () => {
 });
 
 start();
-=======
-if (process.env.NODE_ENV !== 'test') {
-  start();
-}
-
-export { fastify };
->>>>>>> 35d765e (.)

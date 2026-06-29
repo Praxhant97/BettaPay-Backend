@@ -11,6 +11,8 @@ export * from './cors.js';
 export * from './tracing.js';
 export * from './fastify-plugins.js';
 export * from './logger.js';
+export * from './envAwareSchema.js';
+export * from './webhookSchema.js';
 import "dotenv/config";
 
 export function genReqId(req: FastifyRequest | IncomingMessage): string {
