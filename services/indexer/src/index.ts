@@ -15,6 +15,7 @@
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import crypto from 'crypto';
 import { Redis } from 'ioredis';
@@ -43,6 +44,7 @@ registerRequestId(fastify);
 const prisma = new PrismaClient();
 
 fastify.register(cors, { origin: env.ALLOWED_ORIGINS });
+fastify.register(helmet, { contentSecurityPolicy: false });
 registerErrorHandler(fastify);
 // Distributed tracing: log + propagate x-request-id / x-trace-id (#118).
 registerTracing(fastify);
