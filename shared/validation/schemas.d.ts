@@ -1,6 +1,8 @@
 import { z } from 'zod';
 export declare const idSchema: z.ZodString;
 export declare const isoDateString: z.ZodEffects<z.ZodString, string, string>;
+export declare const AmountString: z.ZodString;
+export declare const PositiveAmountString: z.ZodEffects<z.ZodString, string, string>;
 export declare const userSchema: z.ZodObject<{
     id: z.ZodString;
     email: z.ZodString;
@@ -25,18 +27,21 @@ export declare const merchantSchema: z.ZodObject<{
     name: z.ZodString;
     ownerId: z.ZodString;
     createdAt: z.ZodEffects<z.ZodString, string, string>;
+    deletedAt: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
     settings: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodAny>>;
 }, "strip", z.ZodTypeAny, {
     id: string;
     createdAt: string;
     name: string;
     ownerId: string;
+    deletedAt?: string | undefined;
     settings?: Record<string, any> | undefined;
 }, {
     id: string;
     createdAt: string;
     name: string;
     ownerId: string;
+    deletedAt?: string | undefined;
     settings?: Record<string, any> | undefined;
 }>;
 export declare const walletSchema: z.ZodObject<{
@@ -121,19 +126,27 @@ export declare const settlementSchema: z.ZodObject<{
     id: z.ZodString;
     merchantId: z.ZodString;
     totalAmount: z.ZodString;
+    grossAmount: z.ZodString;
+    feeAmount: z.ZodString;
+    netAmount: z.ZodString;
+    feeBps: z.ZodNumber;
     asset: z.ZodString;
+    batchId: z.ZodOptional<z.ZodString>;
     initiatedAt: z.ZodEffects<z.ZodString, string, string>;
     completedAt: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
     status: z.ZodEnum<["pending", "processing", "completed", "failed"]>;
-    metadata: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodAny>>;
 }, "strip", z.ZodTypeAny, {
     id: string;
     status: "completed" | "failed" | "pending" | "processing";
     asset: string;
     merchantId: string;
     totalAmount: string;
+    grossAmount: string;
+    feeAmount: string;
+    netAmount: string;
+    feeBps: number;
     initiatedAt: string;
-    metadata?: Record<string, any> | undefined;
+    batchId?: string | undefined;
     completedAt?: string | undefined;
 }, {
     id: string;
@@ -141,8 +154,12 @@ export declare const settlementSchema: z.ZodObject<{
     asset: string;
     merchantId: string;
     totalAmount: string;
+    grossAmount: string;
+    feeAmount: string;
+    netAmount: string;
+    feeBps: number;
     initiatedAt: string;
-    metadata?: Record<string, any> | undefined;
+    batchId?: string | undefined;
     completedAt?: string | undefined;
 }>;
 export declare const fxQuoteSchema: z.ZodObject<{
@@ -483,19 +500,27 @@ export declare const settlementTriggeredEvent: z.ZodObject<{
             id: z.ZodString;
             merchantId: z.ZodString;
             totalAmount: z.ZodString;
+            grossAmount: z.ZodString;
+            feeAmount: z.ZodString;
+            netAmount: z.ZodString;
+            feeBps: z.ZodNumber;
             asset: z.ZodString;
+            batchId: z.ZodOptional<z.ZodString>;
             initiatedAt: z.ZodEffects<z.ZodString, string, string>;
             completedAt: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
             status: z.ZodEnum<["pending", "processing", "completed", "failed"]>;
-            metadata: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodAny>>;
         }, "strip", z.ZodTypeAny, {
             id: string;
             status: "completed" | "failed" | "pending" | "processing";
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         }, {
             id: string;
@@ -503,8 +528,12 @@ export declare const settlementTriggeredEvent: z.ZodObject<{
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         }>;
     }, "strip", z.ZodTypeAny, {
@@ -514,8 +543,12 @@ export declare const settlementTriggeredEvent: z.ZodObject<{
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     }, {
@@ -525,8 +558,12 @@ export declare const settlementTriggeredEvent: z.ZodObject<{
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     }>;
@@ -541,8 +578,12 @@ export declare const settlementTriggeredEvent: z.ZodObject<{
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     };
@@ -557,8 +598,12 @@ export declare const settlementTriggeredEvent: z.ZodObject<{
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     };
@@ -1130,19 +1175,27 @@ export declare const eventSchemas: z.ZodDiscriminatedUnion<"type", [z.ZodObject<
             id: z.ZodString;
             merchantId: z.ZodString;
             totalAmount: z.ZodString;
+            grossAmount: z.ZodString;
+            feeAmount: z.ZodString;
+            netAmount: z.ZodString;
+            feeBps: z.ZodNumber;
             asset: z.ZodString;
+            batchId: z.ZodOptional<z.ZodString>;
             initiatedAt: z.ZodEffects<z.ZodString, string, string>;
             completedAt: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
             status: z.ZodEnum<["pending", "processing", "completed", "failed"]>;
-            metadata: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodAny>>;
         }, "strip", z.ZodTypeAny, {
             id: string;
             status: "completed" | "failed" | "pending" | "processing";
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         }, {
             id: string;
@@ -1150,8 +1203,12 @@ export declare const eventSchemas: z.ZodDiscriminatedUnion<"type", [z.ZodObject<
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         }>;
     }, "strip", z.ZodTypeAny, {
@@ -1161,8 +1218,12 @@ export declare const eventSchemas: z.ZodDiscriminatedUnion<"type", [z.ZodObject<
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     }, {
@@ -1172,8 +1233,12 @@ export declare const eventSchemas: z.ZodDiscriminatedUnion<"type", [z.ZodObject<
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     }>;
@@ -1188,8 +1253,12 @@ export declare const eventSchemas: z.ZodDiscriminatedUnion<"type", [z.ZodObject<
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     };
@@ -1204,8 +1273,12 @@ export declare const eventSchemas: z.ZodDiscriminatedUnion<"type", [z.ZodObject<
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     };
@@ -1517,6 +1590,8 @@ export type FXQuote = z.infer<typeof fxQuoteSchema>;
 export type BillPayment = z.infer<typeof billPaymentSchema>;
 export type AnchorTransfer = z.infer<typeof anchorTransferSchema>;
 export type EventPayloads = z.infer<typeof eventSchemas>;
+export type AmountString = z.infer<typeof AmountString>;
+export type PositiveAmountString = z.infer<typeof PositiveAmountString>;
 export declare function parseEvent(raw: unknown): {
     id: string;
     type: "PaymentInitiated";
@@ -1572,8 +1647,12 @@ export declare function parseEvent(raw: unknown): {
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     };
@@ -1686,8 +1765,12 @@ export declare function safeParseEvent(raw: unknown): z.SafeParseReturnType<{
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     };
@@ -1799,8 +1882,12 @@ export declare function safeParseEvent(raw: unknown): z.SafeParseReturnType<{
             asset: string;
             merchantId: string;
             totalAmount: string;
+            grossAmount: string;
+            feeAmount: string;
+            netAmount: string;
+            feeBps: number;
             initiatedAt: string;
-            metadata?: Record<string, any> | undefined;
+            batchId?: string | undefined;
             completedAt?: string | undefined;
         };
     };
@@ -1861,18 +1948,21 @@ export declare function safeParseEvent(raw: unknown): z.SafeParseReturnType<{
 export declare const CreateMerchantBody: z.ZodObject<{
     id: z.ZodString;
     name: z.ZodString;
-    ownerId: z.ZodOptional<z.ZodString>;
+    ownerId: z.ZodString;
     settings: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+    secret: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
     id: string;
     name: string;
-    ownerId?: string | undefined;
+    ownerId: string;
     settings?: Record<string, unknown> | undefined;
+    secret?: string | undefined;
 }, {
     id: string;
     name: string;
-    ownerId?: string | undefined;
+    ownerId: string;
     settings?: Record<string, unknown> | undefined;
+    secret?: string | undefined;
 }>;
 export declare const CreatePaymentBody: z.ZodObject<{
     merchantId: z.ZodString;
@@ -1893,18 +1983,52 @@ export declare const CreatePaymentBody: z.ZodObject<{
     payerId?: string | undefined;
     reference?: string | undefined;
 }>;
-export declare const CreateSettlementBody: z.ZodObject<{
+export declare const CreateSettlementBody: z.ZodEffects<z.ZodObject<{
     merchantId: z.ZodString;
-    amount: z.ZodString;
-    asset: z.ZodString;
+    amount: z.ZodOptional<z.ZodString>;
+    asset: z.ZodOptional<z.ZodString>;
+    items: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        amount: z.ZodString;
+        asset: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        asset: string;
+        amount: string;
+    }, {
+        asset: string;
+        amount: string;
+    }>, "many">>;
 }, "strip", z.ZodTypeAny, {
-    asset: string;
-    amount: string;
     merchantId: string;
+    asset?: string | undefined;
+    amount?: string | undefined;
+    items?: {
+        asset: string;
+        amount: string;
+    }[] | undefined;
 }, {
-    asset: string;
-    amount: string;
     merchantId: string;
+    asset?: string | undefined;
+    amount?: string | undefined;
+    items?: {
+        asset: string;
+        amount: string;
+    }[] | undefined;
+}>, {
+    merchantId: string;
+    asset?: string | undefined;
+    amount?: string | undefined;
+    items?: {
+        asset: string;
+        amount: string;
+    }[] | undefined;
+}, {
+    merchantId: string;
+    asset?: string | undefined;
+    amount?: string | undefined;
+    items?: {
+        asset: string;
+        amount: string;
+    }[] | undefined;
 }>;
 export declare const AuthTokenBody: z.ZodObject<{
     merchantId: z.ZodString;
@@ -1916,8 +2040,110 @@ export declare const AuthTokenBody: z.ZodObject<{
     merchantId: string;
     secret: string;
 }>;
+export declare const UpdatePaymentStatusBody: z.ZodObject<{
+    status: z.ZodEnum<["completed", "failed", "cancelled"]>;
+}, "strip", z.ZodTypeAny, {
+    status: "completed" | "failed" | "cancelled";
+}, {
+    status: "completed" | "failed" | "cancelled";
+}>;
+export declare const UpdateMerchantSettingsBody: z.ZodObject<{
+    feeBps: z.ZodOptional<z.ZodNumber>;
+    tier: z.ZodOptional<z.ZodString>;
+    minSettlementAmount: z.ZodOptional<z.ZodString>;
+    maxSettlementAmount: z.ZodOptional<z.ZodString>;
+    dailySettlementLimit: z.ZodOptional<z.ZodString>;
+}, "strip", z.ZodTypeAny, {
+    feeBps?: number | undefined;
+    tier?: string | undefined;
+    minSettlementAmount?: string | undefined;
+    maxSettlementAmount?: string | undefined;
+    dailySettlementLimit?: string | undefined;
+}, {
+    feeBps?: number | undefined;
+    tier?: string | undefined;
+    minSettlementAmount?: string | undefined;
+    maxSettlementAmount?: string | undefined;
+    dailySettlementLimit?: string | undefined;
+}>;
+export declare const PaginationQuery: z.ZodObject<{
+    limit: z.ZodDefault<z.ZodNumber>;
+    offset: z.ZodDefault<z.ZodNumber>;
+}, "strip", z.ZodTypeAny, {
+    limit: number;
+    offset: number;
+}, {
+    limit?: number | undefined;
+    offset?: number | undefined;
+}>;
+export type PaginationQuery = z.infer<typeof PaginationQuery>;
+export declare const SettlementListQuery: z.ZodEffects<z.ZodObject<{
+    limit: z.ZodDefault<z.ZodNumber>;
+    offset: z.ZodDefault<z.ZodNumber>;
+} & {
+    status: z.ZodOptional<z.ZodEnum<["pending", "processing", "completed", "failed"]>>;
+    from: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
+    to: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
+}, "strip", z.ZodTypeAny, {
+    limit: number;
+    offset: number;
+    status?: "completed" | "failed" | "pending" | "processing" | undefined;
+    from?: string | undefined;
+    to?: string | undefined;
+}, {
+    status?: "completed" | "failed" | "pending" | "processing" | undefined;
+    from?: string | undefined;
+    to?: string | undefined;
+    limit?: number | undefined;
+    offset?: number | undefined;
+}>, {
+    limit: number;
+    offset: number;
+    status?: "completed" | "failed" | "pending" | "processing" | undefined;
+    from?: string | undefined;
+    to?: string | undefined;
+}, {
+    status?: "completed" | "failed" | "pending" | "processing" | undefined;
+    from?: string | undefined;
+    to?: string | undefined;
+    limit?: number | undefined;
+    offset?: number | undefined;
+}>;
+export type SettlementListQuery = z.infer<typeof SettlementListQuery>;
+export declare const DateRangeQuery: z.ZodEffects<z.ZodObject<{
+    from: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
+    to: z.ZodDefault<z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>>;
+}, "strip", z.ZodTypeAny, {
+    to: string;
+    from?: string | undefined;
+}, {
+    from?: string | undefined;
+    to?: string | undefined;
+}>, {
+    to: string;
+    from?: string | undefined;
+}, {
+    from?: string | undefined;
+    to?: string | undefined;
+}>;
+export type DateRangeQuery = z.infer<typeof DateRangeQuery>;
 export type CreateMerchantBody = z.infer<typeof CreateMerchantBody>;
 export type CreatePaymentBody = z.infer<typeof CreatePaymentBody>;
 export type CreateSettlementBody = z.infer<typeof CreateSettlementBody>;
 export type AuthTokenBody = z.infer<typeof AuthTokenBody>;
+export type UpdatePaymentStatusBody = z.infer<typeof UpdatePaymentStatusBody>;
+export type UpdateMerchantSettingsBody = z.infer<typeof UpdateMerchantSettingsBody>;
+export declare const EVENT_TYPES: readonly ["PaymentInitiated", "PaymentCompleted", "SettlementTriggered", "FXExecuted", "BillPaid", "AnchorSettled"];
+export type EventType = (typeof EVENT_TYPES)[number];
+export interface IndexedEvent {
+    id: string;
+    stellarId?: string | null;
+    contractId: string;
+    topics: string[];
+    type: EventType;
+    rawValue: string;
+    decodedPayload?: unknown;
+    ledger: number;
+    indexedAt: string;
+}
 //# sourceMappingURL=schemas.d.ts.map

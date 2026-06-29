@@ -4,6 +4,16 @@ import { z } from 'zod';
 export const idSchema = z.string().min(1);
 export const isoDateString = z.string().refine((s) => !Number.isNaN(Date.parse(s)), { message: 'Invalid ISO date string' });
 
+// Shared validation schemas
+export const AmountString = z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string');
+export const PositiveAmountString = AmountString.refine(
+  (val) => {
+    const parsed = parseFloat(val);
+    return !isNaN(parsed) && parsed > 0;
+  },
+  { message: 'Amount must be greater than zero' }
+);
+
 export const userSchema = z.object({
   id: idSchema,
   email: z.string().email(),
@@ -158,6 +168,8 @@ export type FXQuote = z.infer<typeof fxQuoteSchema>;
 export type BillPayment = z.infer<typeof billPaymentSchema>;
 export type AnchorTransfer = z.infer<typeof anchorTransferSchema>;
 export type EventPayloads = z.infer<typeof eventSchemas>;
+export type AmountString = z.infer<typeof AmountString>;
+export type PositiveAmountString = z.infer<typeof PositiveAmountString>;
 
 // Convenience parsers
 export function parseEvent(raw: unknown) {
@@ -180,7 +192,7 @@ export const CreateMerchantBody = z.object({
 
 export const CreatePaymentBody = z.object({
   merchantId: z.string().min(1, 'merchantId is required'),
-  amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string'),
+  amount: AmountString,
   asset: z.string().min(1, 'asset is required'),
   payerId: z.string().optional(),
   reference: z.string().optional(),
@@ -188,10 +200,10 @@ export const CreatePaymentBody = z.object({
 
 export const CreateSettlementBody = z.object({
   merchantId: z.string().min(1, 'merchantId is required'),
-  amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string').optional(),
+  amount: AmountString.optional(),
   asset: z.string().min(1, 'asset is required').optional(),
   items: z.array(z.object({
-    amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string'),
+    amount: AmountString,
     asset: z.string().min(1, 'asset is required'),
   })).optional(),
 }).refine((data) => {

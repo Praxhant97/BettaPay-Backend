@@ -2,6 +2,12 @@ import { z } from 'zod';
 // Entity schemas
 export const idSchema = z.string().min(1);
 export const isoDateString = z.string().refine((s) => !Number.isNaN(Date.parse(s)), { message: 'Invalid ISO date string' });
+// Shared validation schemas
+export const AmountString = z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string');
+export const PositiveAmountString = AmountString.refine((val) => {
+    const parsed = parseFloat(val);
+    return !isNaN(parsed) && parsed > 0;
+}, { message: 'Amount must be greater than zero' });
 export const userSchema = z.object({
     id: idSchema,
     email: z.string().email(),
@@ -14,6 +20,7 @@ export const merchantSchema = z.object({
     name: z.string(),
     ownerId: idSchema,
     createdAt: isoDateString,
+    deletedAt: isoDateString.optional(),
     settings: z.record(z.any()).optional()
 });
 export const walletSchema = z.object({
@@ -53,6 +60,7 @@ export const settlementSchema = z.object({
     netAmount: z.string(),
     feeBps: z.number(),
     asset: z.string(),
+    batchId: z.string().optional(),
     initiatedAt: isoDateString,
     completedAt: isoDateString.optional(),
     status: z.enum(['pending', 'processing', 'completed', 'failed']),
@@ -138,23 +146,74 @@ export function safeParseEvent(raw) {
 export const CreateMerchantBody = z.object({
     id: z.string().min(1, 'id is required'),
     name: z.string().min(1, 'name is required'),
-    ownerId: z.string().optional(),
+    ownerId: z.string().min(1, 'ownerId is required'),
     settings: z.record(z.unknown()).optional(),
+    secret: z.string().optional(),
 });
 export const CreatePaymentBody = z.object({
     merchantId: z.string().min(1, 'merchantId is required'),
-    amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string'),
+    amount: AmountString,
     asset: z.string().min(1, 'asset is required'),
     payerId: z.string().optional(),
     reference: z.string().optional(),
 });
 export const CreateSettlementBody = z.object({
     merchantId: z.string().min(1, 'merchantId is required'),
-    amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string'),
-    asset: z.string().min(1, 'asset is required'),
+    amount: AmountString.optional(),
+    asset: z.string().min(1, 'asset is required').optional(),
+    items: z.array(z.object({
+        amount: AmountString,
+        asset: z.string().min(1, 'asset is required'),
+    })).optional(),
+}).refine((data) => {
+    // Either single amount/asset OR items array must be provided, not both
+    const hasSingleAsset = data.amount && data.asset;
+    const hasItems = data.items && data.items.length > 0;
+    return (hasSingleAsset && !hasItems) || (!hasSingleAsset && hasItems);
+}, {
+    message: 'Provide either amount/asset OR items array, not both',
 });
 export const AuthTokenBody = z.object({
     merchantId: z.string().min(1, 'merchantId is required'),
     secret: z.string().min(1, 'secret is required'),
 });
+// A payment may only be moved into a terminal state. `initiated` is never an
+// accepted target (payments start there at creation), so it is excluded here.
+export const UpdatePaymentStatusBody = z.object({
+    status: z.enum(['completed', 'failed', 'cancelled']),
+});
+// Per-merchant fee rule configuration. feeBps is basis points (1% = 100 bps),
+// capped at 10000 (100%). Unknown keys are stripped; the route merges these into
+// the merchant's existing settings rather than replacing them.
+export const UpdateMerchantSettingsBody = z.object({
+    feeBps: z.number().int().min(0).max(10000).optional(),
+    tier: z.string().optional(),
+    minSettlementAmount: z.string().regex(/^\d+(\.\d+)?$/, 'minSettlementAmount must be a numeric string').optional(),
+    maxSettlementAmount: z.string().regex(/^\d+(\.\d+)?$/, 'maxSettlementAmount must be a numeric string').optional(),
+    dailySettlementLimit: z.string().regex(/^\d+(\.\d+)?$/, 'dailySettlementLimit must be a numeric string').optional(),
+});
+export const PaginationQuery = z.object({
+    limit: z.coerce.number().max(200).default(50),
+    offset: z.coerce.number().min(0).default(0),
+});
+export const SettlementListQuery = PaginationQuery.extend({
+    status: z.enum(['pending', 'processing', 'completed', 'failed']).optional(),
+    from: isoDateString.optional(),
+    to: isoDateString.optional(),
+}).refine((data) => !data.from || !data.to || data.from <= data.to, { message: 'from must be before to' });
+export const DateRangeQuery = z
+    .object({
+    from: isoDateString.optional(),
+    to: isoDateString.optional().default(() => new Date().toISOString())
+})
+    .refine((data) => !data.from || !data.to || data.from <= data.to, { message: "from must be before to" });
+// ─── Indexer types ────────────────────────────────────────────────────────────
+export const EVENT_TYPES = [
+    'PaymentInitiated',
+    'PaymentCompleted',
+    'SettlementTriggered',
+    'FXExecuted',
+    'BillPaid',
+    'AnchorSettled'
+];
 //# sourceMappingURL=schemas.js.map
