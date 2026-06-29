@@ -108,3 +108,53 @@ export function buildPaymentOperation(params: { source?: string; destination: st
     amount: params.amount
   };
 }
+
+/**
+ * Builds a properly encoded Horizon API URL for the specified resource.
+ * Handles trailing slashes in base URL and encodes query parameters.
+ *
+ * @param baseUrl - The Horizon API base URL (e.g., 'https://horizon.stellar.org' or 'https://horizon.stellar.org/')
+ * @param resource - The Horizon resource path (e.g., 'accounts', 'transactions', 'operations', 'payments', 'effects')
+ * @param params - Optional query parameters to include in the URL
+ * @returns The fully constructed URL string
+ *
+ * @example
+ * // Basic resource URL
+ * buildHorizonUrl('https://horizon.stellar.org', 'accounts');
+ * // Returns: 'https://horizon.stellar.org/accounts'
+ *
+ * @example
+ * // With query parameters
+ * buildHorizonUrl('https://horizon.stellar.org', 'transactions', { limit: 10, order: 'desc' });
+ * // Returns: 'https://horizon.stellar.org/transactions?limit=10&order=desc'
+ *
+ * @example
+ * // With trailing slash in base URL
+ * buildHorizonUrl('https://horizon.stellar.org/', 'payments', { asset: 'USD:GABC...' });
+ * // Returns: 'https://horizon.stellar.org/payments?asset=USD%3AGABC...'
+ *
+ * @example
+ * // Special characters are encoded
+ * buildHorizonUrl('https://horizon.stellar.org', 'accounts', { signer: 'GABC... =DEF' });
+ * // Returns: 'https://horizon.stellar.org/accounts?signer=GABC...%20%3DDEF'
+ */
+export function buildHorizonUrl(
+  baseUrl: string,
+  resource: string,
+  params?: Record<string, any>
+): string {
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+  const url = new URL(`${normalizedBase}/${resource}`);
+
+  if (params) {
+    const searchParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null) {
+        searchParams.append(key, String(value));
+      }
+    }
+    url.search = searchParams.toString();
+  }
+
+  return url.toString();
+}
