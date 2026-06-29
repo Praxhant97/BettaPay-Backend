@@ -22,9 +22,9 @@ import { z } from 'zod';
 import {
   validateEnv,
   registerErrorHandler,
+  registerRequestId,
   createErrorResponse,
   ErrorCodes,
-  genReqId,
   createLoggerOptions,
   registerTracing,
 } from '@bettapay/validation';
@@ -158,9 +158,9 @@ interface StoredQuote {
 
 const fastify = Fastify({
   logger: createLoggerOptions({ level: env.LOG_LEVEL }),
-  genReqId,
 });
 
+registerRequestId(fastify);
 redis = new Redis(env.REDIS_URL, { enableOfflineQueue: false });
 redis.on('error', (err) => fastify.log.warn({ err: err.message }, 'Redis error in fx-engine'));
 fastify.addHook('onClose', async () => { await redis.quit().catch(() => {}); });

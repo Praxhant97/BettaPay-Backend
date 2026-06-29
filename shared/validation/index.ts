@@ -9,6 +9,7 @@ export * from './plugins.js';
 export * from './prisma.js';
 export * from './cors.js';
 export * from './tracing.js';
+export * from './fastify-plugins.js';
 export * from './logger.js';
 import "dotenv/config";
 
