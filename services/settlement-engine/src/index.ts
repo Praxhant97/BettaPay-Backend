@@ -34,6 +34,7 @@ import {
   validateEnv,
   CreateSettlementBody,
   registerErrorHandler,
+  registerRequestId,
   createErrorResponse,
   ErrorCodes,
   FeeRule,
@@ -41,7 +42,6 @@ import {
   getPrismaLogLevels,
   setupPrismaQueryLogging,
   connectWithRetry,
-  genReqId,
   createLoggerOptions,
   registerTracing,
 } from "@bettapay/validation";
@@ -71,9 +71,9 @@ const fastify = Fastify({
   logger: createLoggerOptions({ level: env.LOG_LEVEL }),
   // Explicitly set body limit to 1MB (Fastify's default)
   bodyLimit: 1_048_576,
-  genReqId
 });
 
+registerRequestId(fastify);
 setupPrismaQueryLogging(prisma, fastify.log);
 
 const redis = new Redis(env.REDIS_URL);

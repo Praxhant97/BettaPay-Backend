@@ -25,20 +25,21 @@ import { z } from 'zod';
 import {
   validateEnv,
   registerErrorHandler,
+  registerRequestId,
   registerServiceAuth,
   PaginationQuery,
   EVENT_TYPES,
   connectWithRetry,
   createLoggerOptions,
   registerTracing,
-  genReqId,
 } from '@bettapay/validation';
 import type { EventType } from '@bettapay/validation';
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3003');
 
-const fastify = Fastify({ logger: createLoggerOptions({ level: env.LOG_LEVEL }), genReqId });
+const fastify = Fastify({ logger: createLoggerOptions({ level: env.LOG_LEVEL }) });
+registerRequestId(fastify);
 const prisma = new PrismaClient();
 
 fastify.register(cors, { origin: env.ALLOWED_ORIGINS });
