@@ -41,6 +41,7 @@ import {
   SettlementListQuery,
   getPrismaLogLevels,
   setupPrismaQueryLogging,
+  buildPrismaConnectionUrl,
   connectWithRetry,
   createLoggerOptions,
   registerTracing,
@@ -56,6 +57,11 @@ const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3001');
 const startTime = Date.now();
 
+process.env.DATABASE_URL = buildPrismaConnectionUrl(
+  env.DATABASE_URL,
+  env.DATABASE_POOL_SIZE,
+  env.DATABASE_POOL_TIMEOUT,
+);
 const prisma = new PrismaClient({ log: getPrismaLogLevels() });
 
 type SettlementJobData = {

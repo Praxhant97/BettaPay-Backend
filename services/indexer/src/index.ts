@@ -22,6 +22,8 @@ import { Redis } from 'ioredis';
 import { Queue, Worker } from 'bullmq';
 import { PrismaClient } from '@prisma/client';
 import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
+import pg from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { z } from 'zod';
 import {
   validateEnv,
@@ -30,8 +32,11 @@ import {
   registerServiceAuth,
   PaginationQuery,
   EVENT_TYPES,
+  buildPrismaConnectionUrl,
   connectWithRetry,
   createLoggerOptions,
+  getPrismaLogLevels,
+  setupPrismaQueryLogging,
   registerTracing,
   genReqId,
   createWebhookUrlSchema,
@@ -43,7 +48,14 @@ const PORT = Number(process.env.PORT ?? '3003');
 
 const fastify = Fastify({ logger: createLoggerOptions({ level: env.LOG_LEVEL }) });
 registerRequestId(fastify);
-const prisma = new PrismaClient();
+const pool = new pg.Pool({
+  connectionString: buildPrismaConnectionUrl(env.DATABASE_URL, env.DATABASE_POOL_SIZE, env.DATABASE_POOL_TIMEOUT),
+  max: env.DATABASE_POOL_SIZE,
+  connectionTimeoutMillis: env.DATABASE_POOL_TIMEOUT * 1000,
+});
+const prismaAdapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter: prismaAdapter, log: getPrismaLogLevels() });
+setupPrismaQueryLogging(prisma, fastify.log);
 
 fastify.register(cors, { origin: env.ALLOWED_ORIGINS });
 fastify.register(helmet, { contentSecurityPolicy: false });
